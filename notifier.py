@@ -9,6 +9,7 @@ from datetime import datetime
 import requests
 
 from screener import Candidate
+from entry_judge import EntryCheckResult
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,66 @@ def _build_message(candidates: list[Candidate]) -> str:
     return "\n".join(lines)
 
 
+def _ok(b: bool) -> str:
+    return "✓" if b else "✗"
+
+
+def _build_entry_message(results: list[EntryCheckResult]) -> str:
+    today = datetime.now().strftime("%Y-%m-%d")
+    passing = [r for r in results if r.all_met]
+
+    lines = [f"【エントリー判断】{today}", ""]
+
+    if not passing:
+        lines.append("本日の通過銘柄なし")
+        if results:
+            lines.append("")
+            lines.append("─ 条件別チェック ─")
+            for r in results:
+                code = r.ticker.replace(".T", "")
+                lines.append(
+                    f"\n{code} {r.name}\n"
+                    f"  日足60MA上向:{_ok(r.daily_ma60_up)} "
+                    f"日足PO:{_ok(r.daily_po)} "
+                    f"日足タッチ:{r.daily_touch_count}回/{_ok(r.daily_touch_valid)} "
+                    f"本数:{r.bars_since_touch}本/{_ok(r.bars_ok)}\n"
+                    f"  週足MA20上向:{_ok(r.weekly_ma20_up)} "
+                    f"5週タッチ:{r.weekly_5w_touch_count}回/{_ok(r.weekly_5w_touch_valid)}\n"
+                    f"  RR:{r.rr_ratio:.1f}/{_ok(r.rr_ok)}"
+                )
+    else:
+        lines.append("■ エントリー候補")
+        lines.append("")
+        for r in passing:
+            code = r.ticker.replace(".T", "")
+            gap_str    = ("↑GU" if r.gap_up else "→") if r.gap_up is not None else "-"
+            candle_str = ("陽線" if r.first_candle_bullish else "陰線") if r.first_candle_bullish is not None else "-"
+            lines.append(
+                f"{code} {r.name}\n"
+                f"  エントリー: {r.entry_price:,.0f}円（20日線）\n"
+                f"  損切り:    {r.stop_loss:,.0f}円（-{(1 - r.stop_loss/r.entry_price)*100:.1f}%）\n"
+                f"  目標:      {r.target_price:,.0f}円  RR: 1:{r.rr_ratio:.1f}\n"
+                f"  寄り付き:  {gap_str} / {candle_str}\n"
+                f"  ─ 条件 ─\n"
+                f"  日60↑:{_ok(r.daily_ma60_up)} 日PO:{_ok(r.daily_po)} "
+                f"日タッチ:{r.daily_touch_count}回目 {r.bars_since_touch}本後\n"
+                f"  週20↑:{_ok(r.weekly_ma20_up)} 週5w:{r.weekly_5w_touch_count}回目"
+            )
+            lines.append("")
+
+    lines.append(f"通過: {len(passing)} / {len(results)} 銘柄")
+    return "\n".join(lines)
+
+
+def notify_entry(results: list[EntryCheckResult]) -> None:
+    """エントリー判断結果をLINEに送信する。"""
+    message = _build_entry_message(results)
+    print("\n" + "=" * 50)
+    print(message)
+    print("=" * 50 + "\n")
+    _send(message)
+
+
 def notify(candidates: list[Candidate]) -> None:
     """スクリーニング結果をLINE Messaging API で送信する。"""
     token   = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
@@ -73,11 +134,22 @@ def notify(candidates: list[Candidate]) -> None:
     print(message)
     print("=" * 50 + "\n")
 
+    _send(message)
+
+
+def _send(message: str) -> None:
+    """LINE Messaging API にメッセージを送信する（内部共通関数）。"""
+    token   = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    user_id = os.getenv("LINE_USER_ID")
+
+    if not token or not user_id:
+        logger.error("LINE_CHANNEL_ACCESS_TOKEN または LINE_USER_ID が未設定です。")
+        return
+
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
-
     for chunk in _split_message(message):
         payload = {
             "to": user_id,
@@ -87,7 +159,7 @@ def notify(candidates: list[Candidate]) -> None:
             resp = requests.post(_LINE_PUSH_URL, headers=headers, json=payload, timeout=10)
             resp.raise_for_status()
             logger.info("LINE送信成功（%d文字）", len(chunk))
-        except requests.HTTPError as e:
+        except requests.HTTPError:
             logger.error("LINE送信エラー (HTTP %s): %s", resp.status_code, resp.text)
         except Exception as e:
             logger.error("LINE送信例外: %s", e)
