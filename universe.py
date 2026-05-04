@@ -17,24 +17,31 @@ def fetch_prime_tickers() -> list[str]:
     """JPX公開ExcelからプライムTickerリストを取得する。"""
     logger.info("JPX銘柄一覧を取得中: %s", config.JPX_XLS_URL)
     try:
-        df = pd.read_excel(config.JPX_XLS_URL, dtype={"銘柄コード": str})
+        df = pd.read_excel(config.JPX_XLS_URL, dtype=str)
     except Exception as e:
         logger.error("JPX Excel取得失敗: %s", e)
         raise
 
-    # カラム名の確認
-    expected_cols = {"銘柄コード", "市場・商品区分", "銘柄名"}
-    actual_cols = set(df.columns.tolist())
-    missing = expected_cols - actual_cols
-    if missing:
+    # カラム名の確認（JPXはカラム名を変更することがある）
+    # '銘柄コード' または 'コード' のどちらかに対応
+    code_col = None
+    for candidate in ("銘柄コード", "コード"):
+        if candidate in df.columns:
+            code_col = candidate
+            break
+
+    required = {"市場・商品区分", "銘柄名"}
+    missing = required - set(df.columns)
+    if missing or code_col is None:
         raise ValueError(
             f"JPX Excelのカラム名が想定と異なります。\n"
-            f"  不足: {missing}\n"
+            f"  コードカラム検出: {code_col}\n"
+            f"  不足カラム: {missing}\n"
             f"  実際のカラム: {df.columns.tolist()}"
         )
 
     prime = df[df["市場・商品区分"] == config.PRIME_MARKET_NAME].copy()
-    prime["ticker"] = prime["銘柄コード"].str.zfill(4) + ".T"
+    prime["ticker"] = prime[code_col].str.strip().str.zfill(4) + ".T"
 
     tickers = prime["ticker"].tolist()
     names = dict(zip(prime["ticker"], prime["銘柄名"]))
