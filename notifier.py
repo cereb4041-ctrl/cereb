@@ -113,19 +113,21 @@ def _build_exit_message(signals: list[ExitSignal]) -> str:
     lines = [f"【利益確定アラート】{today}", ""]
 
     if not signals:
-        lines.append("デスクロス銘柄なし")
+        lines.append("シグナルなし")
         return "\n".join(lines)
 
-    lines.append("■ 5日線が20日線を下抜け（売り検討）")
+    lines.append("■ 売り検討銘柄")
     lines.append("")
     for s in signals:
         code = s.ticker.replace(".T", "")
         profit_str = f"+{s.profit_pct:.1f}%" if s.profit_pct >= 0 else f"{s.profit_pct:.1f}%"
+        trigger_str = " / ".join(s.triggers)
         lines.append(
             f"{code} {s.name}\n"
             f"  現在値: {s.current_price:,.0f}円  損益: {profit_str}\n"
             f"  エントリー: {s.entry_price:,.0f}円\n"
-            f"  5日線: {s.ma5:,.0f}  20日線: {s.ma20:,.0f}"
+            f"  5日線: {s.ma5:,.0f}  20日線: {s.ma20:,.0f}\n"
+            f"  ▶ {trigger_str}"
         )
         lines.append("")
 
