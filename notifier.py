@@ -10,6 +10,7 @@ import requests
 
 from screener import Candidate
 from entry_judge import EntryCheckResult
+from positions import ExitSignal
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,40 @@ def _build_entry_message(results: list[EntryCheckResult]) -> str:
 
     lines.append(f"通過: {len(passing)} / {len(results)} 銘柄")
     return "\n".join(lines)
+
+
+def _build_exit_message(signals: list[ExitSignal]) -> str:
+    today = datetime.now().strftime("%Y-%m-%d")
+    lines = [f"【利益確定アラート】{today}", ""]
+
+    if not signals:
+        lines.append("デスクロス銘柄なし")
+        return "\n".join(lines)
+
+    lines.append("■ 5日線が20日線を下抜け（売り検討）")
+    lines.append("")
+    for s in signals:
+        code = s.ticker.replace(".T", "")
+        profit_str = f"+{s.profit_pct:.1f}%" if s.profit_pct >= 0 else f"{s.profit_pct:.1f}%"
+        lines.append(
+            f"{code} {s.name}\n"
+            f"  現在値: {s.current_price:,.0f}円  損益: {profit_str}\n"
+            f"  エントリー: {s.entry_price:,.0f}円\n"
+            f"  5日線: {s.ma5:,.0f}  20日線: {s.ma20:,.0f}"
+        )
+        lines.append("")
+
+    lines.append(f"アラート {len(signals)} 銘柄")
+    return "\n".join(lines)
+
+
+def notify_exit(signals: list[ExitSignal]) -> None:
+    """利益確定アラートをLINEに送信する。"""
+    message = _build_exit_message(signals)
+    print("\n" + "=" * 50)
+    print(message)
+    print("=" * 50 + "\n")
+    _send(message)
 
 
 def notify_entry(results: list[EntryCheckResult]) -> None:
