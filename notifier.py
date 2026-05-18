@@ -61,49 +61,88 @@ def _ok(b: bool) -> str:
     return "✓" if b else "✗"
 
 
+def _fmt_price(v) -> str:
+    """価格を文字列化。Noneなら '-'。"""
+    return f"{v:,.0f}円" if v is not None else "-"
+
+
+def _rejection_reasons(r: EntryCheckResult) -> list[str]:
+    """見送り理由を日本語リストで返す。"""
+    reasons = []
+    if not r.daily_ma60_up:
+        reasons.append("60日線が下向き")
+    if not r.daily_po:
+        reasons.append("日足PO未成立")
+    if not r.daily_touch_valid:
+        reasons.append(f"日足タッチ{r.daily_touch_count}回（1〜2回外）")
+    if not r.bars_ok:
+        reasons.append(f"タッチ後{r.bars_since_touch}本経過（4本超）")
+    if not r.weekly_ma20_up:
+        reasons.append("週足20週線が下向き")
+    if not r.weekly_5w_touch_valid:
+        reasons.append(f"週足5wタッチ{r.weekly_5w_touch_count}回（1〜2回外）")
+    if not r.rr_ok:
+        reasons.append(f"RR {r.rr_ratio:.1f}（2.0未満）")
+    if r.opening_checked:
+        if r.gap_up is False:
+            reasons.append("ギャップダウン寄り")
+        if r.first_candle_bullish is False:
+            reasons.append("寄り付き陰線")
+    return reasons
+
+
+def _opening_line(r: EntryCheckResult) -> str:
+    """寄り付き情報を1行で返す。"""
+    if not r.opening_checked:
+        return "寄り付き: 未取得"
+    gap_str    = "↑GU" if r.gap_up else "→フラット/↓GD"
+    candle_str = "陽線" if r.first_candle_bullish else "陰線"
+    prev_str   = _fmt_price(r.prev_close)
+    open_str   = _fmt_price(r.open_price)
+    return f"前日終値: {prev_str}  寄り付き: {open_str}（{gap_str} / {candle_str}）"
+
+
 def _build_entry_message(results: list[EntryCheckResult]) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     passing = [r for r in results if r.all_met]
 
     lines = [f"【エントリー判断】{today}", ""]
 
-    if not passing:
-        lines.append("本日の通過銘柄なし")
-        if results:
-            lines.append("")
-            lines.append("─ 条件別チェック ─")
-            for r in results:
-                code = r.ticker.replace(".T", "")
-                lines.append(
-                    f"\n{code} {r.name}\n"
-                    f"  日足60MA上向:{_ok(r.daily_ma60_up)} "
-                    f"日足PO:{_ok(r.daily_po)} "
-                    f"日足タッチ:{r.daily_touch_count}回/{_ok(r.daily_touch_valid)} "
-                    f"本数:{r.bars_since_touch}本/{_ok(r.bars_ok)}\n"
-                    f"  週足MA20上向:{_ok(r.weekly_ma20_up)} "
-                    f"5週タッチ:{r.weekly_5w_touch_count}回/{_ok(r.weekly_5w_touch_valid)}\n"
-                    f"  RR:{r.rr_ratio:.1f}/{_ok(r.rr_ok)}"
-                )
-    else:
+    # ── エントリー候補（通過銘柄）──────────────
+    if passing:
         lines.append("■ エントリー候補")
         lines.append("")
         for r in passing:
             code = r.ticker.replace(".T", "")
-            gap_str    = ("↑GU" if r.gap_up else "→") if r.gap_up is not None else "-"
-            candle_str = ("陽線" if r.first_candle_bullish else "陰線") if r.first_candle_bullish is not None else "-"
             lines.append(
-                f"{code} {r.name}\n"
+                f"◎ {code} {r.name}\n"
                 f"  エントリー: {r.entry_price:,.0f}円（20日線）\n"
-                f"  損切り:    {r.stop_loss:,.0f}円（-{(1 - r.stop_loss/r.entry_price)*100:.1f}%）\n"
+                f"  損切り:    {r.stop_loss:,.0f}円"
+                f"（-{(1 - r.stop_loss/r.entry_price)*100:.1f}%）\n"
                 f"  目標:      {r.target_price:,.0f}円  RR: 1:{r.rr_ratio:.1f}\n"
-                f"  寄り付き:  {gap_str} / {candle_str}\n"
-                f"  ─ 条件 ─\n"
-                f"  日60↑:{_ok(r.daily_ma60_up)} 日PO:{_ok(r.daily_po)} "
-                f"日タッチ:{r.daily_touch_count}回目 {r.bars_since_touch}本後\n"
-                f"  週20↑:{_ok(r.weekly_ma20_up)} 週5w:{r.weekly_5w_touch_count}回目"
+                f"  {_opening_line(r)}\n"
+                f"  条件: 日60↑{_ok(r.daily_ma60_up)} PO{_ok(r.daily_po)} "
+                f"タッチ{r.daily_touch_count}回/{r.bars_since_touch}本後  "
+                f"週20↑{_ok(r.weekly_ma20_up)} 5w{r.weekly_5w_touch_count}回"
             )
             lines.append("")
 
+    # ── 見送り銘柄 ────────────────────────────
+    skipped = [r for r in results if not r.all_met]
+    if skipped:
+        lines.append("─ 見送り銘柄 ─")
+        for r in skipped:
+            code = r.ticker.replace(".T", "")
+            reasons = _rejection_reasons(r)
+            reason_str = "・".join(reasons) if reasons else "不明"
+            lines.append(
+                f"\n✕ {code} {r.name}\n"
+                f"  {_opening_line(r)}\n"
+                f"  5分足: {'陽線' if r.first_candle_bullish else '陰線' if r.first_candle_bullish is not None else '-'}\n"
+                f"  見送り理由: {reason_str}"
+            )
+
+    lines.append("")
     lines.append(f"通過: {len(passing)} / {len(results)} 銘柄")
     return "\n".join(lines)
 
@@ -171,6 +210,59 @@ def notify(candidates: list[Candidate]) -> None:
     print(message)
     print("=" * 50 + "\n")
 
+    _send(message)
+
+
+def notify_morning_report(report_text: str) -> None:
+    """朝の建玉レポートを LINE に送信する。"""
+    print("\n" + "=" * 50)
+    print(report_text)
+    print("=" * 50 + "\n")
+    _send(report_text)
+
+
+def notify_watchlist_registered(entries: list[dict]) -> None:
+    """土曜スクリーニング後：watchlist 自動登録結果を LINE に送信する。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if not entries:
+        message = f"【ウォッチリスト登録】{today}\n\n登録銘柄なし（エントリー条件通過ゼロ）"
+    else:
+        lines = [f"【ウォッチリスト登録】{today}", ""]
+        for e in entries:
+            lines.append(
+                f"{e['code']} {e['name']}\n"
+                f"  株価: {e['stock_price']:,}円  {e['touch_count']}回目タッチ\n"
+                f"  推奨: {e['lot_suggest']}株  SL: {e['stop_loss']:,.0f}  TP: {e['target']:,.0f}"
+            )
+        lines.append("")
+        lines.append(f"合計 {len(entries)} 銘柄をウォッチリストに登録")
+        message = "\n".join(lines)
+
+    print("\n" + "=" * 50)
+    print(message)
+    print("=" * 50 + "\n")
+    _send(message)
+
+
+def notify_entry_recommendation(entries: list[dict]) -> None:
+    """月曜寄り付き確認後：エントリー推奨を LINE に送信する。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    lines = [f"【本日エントリー推奨】{today}", ""]
+
+    for e in entries:
+        lines.append(
+            f"本日エントリー推奨：{e['name']} {e['lots']}株 @{e['open_price']:,.0f}円\n"
+            f"  損切り: {e['stop_loss']:,.0f}円 / 目標: {e['target']:,.0f}円"
+        )
+        lines.append("")
+
+    lines.append("※ 発注は手動で行ってください")
+    message = "\n".join(lines)
+
+    print("\n" + "=" * 50)
+    print(message)
+    print("=" * 50 + "\n")
     _send(message)
 
 

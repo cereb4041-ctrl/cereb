@@ -57,6 +57,8 @@ class EntryCheckResult:
     opening_checked: bool
     gap_up: Optional[bool]
     first_candle_bullish: Optional[bool]
+    prev_close: Optional[float]    # 前日終値
+    open_price: Optional[float]    # 本日寄り付き値
     # エントリー情報
     entry_price: float
     stop_loss: float
@@ -186,17 +188,17 @@ def _check_weekly_5w_touch(ma5: pd.Series, ma20: pd.Series) -> int:
     return len(events)
 
 
-def _fetch_opening(ticker: str) -> tuple[Optional[bool], Optional[bool]]:
+def _fetch_opening(ticker: str) -> tuple[Optional[bool], Optional[bool], Optional[float], Optional[float]]:
     """
     当日の寄り付き判断（5分足）。
     JST 9:00 の足が陽線かつギャップアップか確認する。
-    Returns (gap_up, first_candle_bullish)
+    Returns (gap_up, first_candle_bullish, prev_close, open_price)
     """
     try:
         df5 = _fetch(ticker, period="2d", interval="5m")
         daily = _fetch(ticker, period="3d", interval="1d")
         if df5.empty or daily.empty or len(daily) < 2:
-            return None, None
+            return None, None, None, None
 
         prev_close = float(daily["Close"].dropna().iloc[-2])
 
@@ -208,16 +210,17 @@ def _fetch_opening(ticker: str) -> tuple[Optional[bool], Optional[bool]]:
         today = pd.Timestamp.now(tz=JST).date()
         today_bars = df5[df5.index.date == today]
         if today_bars.empty:
-            return None, None
+            return None, None, None, None
 
         first = today_bars.iloc[0]
-        gap_up              = float(first["Open"]) > prev_close
-        first_candle_bullish = float(first["Close"]) > float(first["Open"])
-        return gap_up, first_candle_bullish
+        open_price           = float(first["Open"])
+        gap_up               = open_price > prev_close
+        first_candle_bullish = float(first["Close"]) > open_price
+        return gap_up, first_candle_bullish, prev_close, open_price
 
     except Exception as e:
         logger.debug("Opening fetch error %s: %s", ticker, e)
-        return None, None
+        return None, None, None, None
 
 
 # ─────────────────────────────────────────────
@@ -272,9 +275,10 @@ def check_entry(candidate: dict, check_opening: bool = True) -> EntryCheckResult
 
     # ── 寄り付き ──────────────────────────────
     gap_up = first_candle_bullish = None
+    prev_close = open_price = None
     opening_checked = False
     if check_opening:
-        gap_up, first_candle_bullish = _fetch_opening(ticker)
+        gap_up, first_candle_bullish, prev_close, open_price = _fetch_opening(ticker)
         opening_checked = gap_up is not None
 
     # ── 総合判断 ─────────────────────────────
@@ -297,6 +301,8 @@ def check_entry(candidate: dict, check_opening: bool = True) -> EntryCheckResult
         opening_checked=opening_checked,
         gap_up=gap_up,
         first_candle_bullish=first_candle_bullish,
+        prev_close=prev_close,
+        open_price=open_price,
         entry_price=entry_price,
         stop_loss=stop_loss,
         target_price=target_price,
@@ -314,6 +320,7 @@ def _no_data_result(ticker, name, price, check_opening) -> EntryCheckResult:
         bars_since_touch=999, bars_ok=False,
         weekly_ma20_up=False, weekly_5w_touch_count=0, weekly_5w_touch_valid=False,
         opening_checked=False, gap_up=None, first_candle_bullish=None,
+        prev_close=None, open_price=None,
         entry_price=0.0, stop_loss=0.0, target_price=0.0, rr_ratio=0.0,
         rr_ok=False, all_met=False,
     )
