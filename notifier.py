@@ -76,7 +76,10 @@ def _rejection_reasons(r: EntryCheckResult) -> list[str]:
     if not r.daily_touch_valid:
         reasons.append(f"日足タッチ{r.daily_touch_count}回（1〜2回外）")
     if not r.bars_ok:
-        reasons.append(f"タッチ後{r.bars_since_touch}本経過（4本超）")
+        if r.bars_since_touch == 0:
+            reasons.append("20日線タッチ未検出")
+        else:
+            reasons.append(f"タッチから{r.bars_since_touch}本目（4本超）")
     if not r.weekly_ma20_up:
         reasons.append("週足20週線が下向き")
     if not r.weekly_5w_touch_valid:
@@ -122,7 +125,7 @@ def _build_entry_message(results: list[EntryCheckResult]) -> str:
                 f"  目標:      {r.target_price:,.0f}円  RR: 1:{r.rr_ratio:.1f}\n"
                 f"  {_opening_line(r)}\n"
                 f"  条件: 日60↑{_ok(r.daily_ma60_up)} PO{_ok(r.daily_po)} "
-                f"タッチ{r.daily_touch_count}回/{r.bars_since_touch}本後  "
+                f"タッチ{r.daily_touch_count}回目/{r.bars_since_touch}本目  "
                 f"週20↑{_ok(r.weekly_ma20_up)} 5w{r.weekly_5w_touch_count}回"
             )
             lines.append("")

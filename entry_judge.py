@@ -140,7 +140,10 @@ def _check_daily_ma20_touch(close: pd.Series, low: pd.Series,
                              ma60: pd.Series) -> tuple[int, int]:
     """
     日足20日線タッチ検出。
-    Returns (touch_count, bars_since_last_touch)
+    Returns (touch_count, rising_bars)
+      touch_count : 0=未検出, 1=1回目, 2=2回目
+      rising_bars : タッチ日を1本目として現在までの経過本数。
+                    タッチ未検出の場合は 0 を返す（999は返さない）。
     """
     n = len(close)
     touch_idx = []
@@ -148,7 +151,7 @@ def _check_daily_ma20_touch(close: pd.Series, low: pd.Series,
         i = n + rel
         if i < 0 or pd.isna(ma20.iloc[i]) or pd.isna(ma60.iloc[i]):
             continue
-        po_ok  = float(ma5.iloc[i]) > float(ma20.iloc[i]) > float(ma60.iloc[i])
+        po_ok   = float(ma5.iloc[i]) > float(ma20.iloc[i]) > float(ma60.iloc[i])
         touched = float(low.iloc[i]) <= float(ma20.iloc[i]) * (1 + DAILY_TOUCH_TOLERANCE)
         up      = float(close.iloc[i]) > float(ma20.iloc[i])
         if po_ok and touched and up:
@@ -156,13 +159,14 @@ def _check_daily_ma20_touch(close: pd.Series, low: pd.Series,
 
     events = _merge_events(touch_idx, DAILY_TOUCH_GAP)
     if not (1 <= len(events) <= 2):
-        return 0, 999
+        return 0, 0          # タッチ未検出
     if events[-1][-1] < DAILY_TOUCH_CUTOFF:
-        return 0, 999
+        return 0, 0          # 最後のタッチが古すぎ
 
     last_touch_abs = n + events[-1][-1]
-    bars_since = (n - 1) - last_touch_abs
-    return len(events), bars_since
+    # タッチ日を1本目として経過本数を計算（例: 当日タッチ=1, 翌日=2, ...）
+    rising_bars = (n - 1) - last_touch_abs + 1
+    return len(events), rising_bars
 
 
 def _check_weekly_5w_touch(ma5: pd.Series, ma20: pd.Series) -> int:
@@ -249,7 +253,7 @@ def check_entry(candidate: dict, check_opening: bool = True) -> EntryCheckResult
     daily_po      = float(dma5.iloc[-1]) > float(dma20.iloc[-1]) > float(dma60.iloc[-1])
     d_touch_count, bars_since = _check_daily_ma20_touch(dc, dl, dma5, dma20, dma60)
     daily_touch_valid = (1 <= d_touch_count <= 2)
-    bars_ok           = (bars_since <= MAX_BARS_SINCE_TOUCH)
+    bars_ok           = (1 <= bars_since <= MAX_BARS_SINCE_TOUCH)
 
     # ── 週足 ─────────────────────────────────
     weekly = _fetch(ticker, period="2y", interval="1wk")
@@ -317,7 +321,7 @@ def _no_data_result(ticker, name, price, check_opening) -> EntryCheckResult:
         ticker=ticker, name=name, price=price,
         daily_ma60_up=False, daily_po=False,
         daily_touch_count=0, daily_touch_valid=False,
-        bars_since_touch=999, bars_ok=False,
+        bars_since_touch=0, bars_ok=False,
         weekly_ma20_up=False, weekly_5w_touch_count=0, weekly_5w_touch_valid=False,
         opening_checked=False, gap_up=None, first_candle_bullish=None,
         prev_close=None, open_price=None,
