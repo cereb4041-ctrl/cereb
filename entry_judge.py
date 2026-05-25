@@ -40,6 +40,9 @@ WEEKLY_5W_CUTOFF      = -8
 STOP_LOSS_PCT = 0.025           # エントリー価格の2.5%下
 RR_MIN        = 2.0
 
+# 寄り付き判断
+GAP_THRESHOLD = 0.001           # 前日終値との差が0.1%超でGU/GD判定（それ以内はフラット）
+
 
 @dataclass
 class EntryCheckResult:
@@ -198,32 +201,60 @@ def _check_weekly_5w_touch(ma5: pd.Series, ma20: pd.Series) -> int:
 
 def _fetch_opening(ticker: str) -> tuple[Optional[bool], Optional[bool], Optional[float], Optional[float]]:
     """
-    当日の寄り付き判断（5分足）。
-    JST 9:00 の足が陽線かつギャップアップか確認する。
+    当日の寄り付き判断（1分足、9:00〜9:05 の最初の足を使用）。
+
     Returns (gap_up, first_candle_bullish, prev_close, open_price)
+      gap_up             : True=GU, False=GD, None=フラット
+      first_candle_bullish: True=陽線, False=陰線
+      prev_close          : 前日終値
+      open_price          : 本日寄り付き値
+    全て None の場合はデータ取得失敗。
     """
     try:
-        df5 = _fetch(ticker, period="2d", interval="5m")
+        df1 = _fetch(ticker, period="1d", interval="1m")
         daily = _fetch(ticker, period="3d", interval="1d")
-        if df5.empty or daily.empty or len(daily) < 2:
+        if df1.empty or daily.empty or len(daily) < 2:
+            logger.debug("%s: 1分足または日足データなし", ticker)
             return None, None, None, None
 
         prev_close = float(daily["Close"].dropna().iloc[-2])
 
         # タイムゾーン変換
-        if df5.index.tzinfo is None:
-            df5.index = df5.index.tz_localize("UTC")
-        df5.index = df5.index.tz_convert(JST)
+        if df1.index.tzinfo is None:
+            df1.index = df1.index.tz_localize("UTC")
+        df1.index = df1.index.tz_convert(JST)
 
         today = pd.Timestamp.now(tz=JST).date()
-        today_bars = df5[df5.index.date == today]
-        if today_bars.empty:
+
+        # 9:00〜9:05 の足を抽出（最初の足 = 寄り付き）
+        opening_bars = df1[
+            (df1.index.date == today)
+            & (df1.index.hour == 9)
+            & (df1.index.minute < 5)
+        ]
+
+        if opening_bars.empty:
+            logger.debug("%s: 9:00-9:05 の1分足データなし（当日=%s）", ticker, today)
             return None, None, None, None
 
-        first = today_bars.iloc[0]
-        open_price           = float(first["Open"])
-        gap_up               = open_price > prev_close
-        first_candle_bullish = float(first["Close"]) > open_price
+        first = opening_bars.iloc[0]
+        open_price  = float(first["Open"])
+        close_price = float(first["Close"])
+
+        # GU/GD/フラット判定（前日終値との差が GAP_THRESHOLD 以上でGU/GD）
+        diff = (open_price - prev_close) / prev_close
+        if diff > GAP_THRESHOLD:
+            gap_up = True    # ギャップアップ
+        elif diff < -GAP_THRESHOLD:
+            gap_up = False   # ギャップダウン
+        else:
+            gap_up = None    # フラット
+
+        first_candle_bullish = close_price > open_price
+        logger.debug(
+            "%s: 寄り付き=%.0f 前日終値=%.0f gap=%s 陽線=%s",
+            ticker, open_price, prev_close, gap_up, first_candle_bullish
+        )
         return gap_up, first_candle_bullish, prev_close, open_price
 
     except Exception as e:
@@ -287,12 +318,21 @@ def check_entry(candidate: dict, check_opening: bool = True) -> EntryCheckResult
     opening_checked = False
     if check_opening:
         gap_up, first_candle_bullish, prev_close, open_price = _fetch_opening(ticker)
-        opening_checked = gap_up is not None
+        # open_price が取れたら取得成功（gap_up=Noneのフラットも成功扱い）
+        opening_checked = open_price is not None
 
     # ── 総合判断 ─────────────────────────────
     basic = (daily_ma60_up and daily_po and daily_touch_valid and bars_ok
              and weekly_ma20_up and weekly_5w_valid and rr_ok)
-    opening_pass = (not opening_checked) or (gap_up is True and first_candle_bullish is True)
+    if not check_opening:
+        opening_pass = True                                      # 寄り付きチェックなし
+    else:
+        # 取得失敗・フラット・GD はすべて見送り
+        opening_pass = (
+            opening_checked
+            and gap_up is True
+            and first_candle_bullish is True
+        )
     all_met = basic and opening_pass
 
     return EntryCheckResult(

@@ -86,23 +86,31 @@ def _rejection_reasons(r: EntryCheckResult) -> list[str]:
         reasons.append(f"週足5wタッチ{r.weekly_5w_touch_count}回（1〜2回外）")
     if not r.rr_ok:
         reasons.append(f"RR {r.rr_ratio:.1f}（2.0未満）")
-    if r.opening_checked:
-        if r.gap_up is False:
-            reasons.append("ギャップダウン寄り")
+    if not r.opening_checked:
+        reasons.append("寄り付きデータ取得失敗")
+    else:
+        if r.gap_up is not True:
+            reasons.append("GD寄り" if r.gap_up is False else "フラット寄り")
         if r.first_candle_bullish is False:
             reasons.append("寄り付き陰線")
     return reasons
 
 
 def _opening_line(r: EntryCheckResult) -> str:
-    """寄り付き情報を1行で返す。"""
+    """寄り付き情報を表示用文字列で返す。"""
     if not r.opening_checked:
-        return "寄り付き: 未取得"
-    gap_str    = "↑GU" if r.gap_up else "→フラット/↓GD"
+        return "寄り付き: 取得失敗"
+
+    gap_str    = "↑GU" if r.gap_up is True else ("↓GD" if r.gap_up is False else "→フラット")
     candle_str = "陽線" if r.first_candle_bullish else "陰線"
     prev_str   = _fmt_price(r.prev_close)
     open_str   = _fmt_price(r.open_price)
-    return f"前日終値: {prev_str}  寄り付き: {open_str}（{gap_str} / {candle_str}）"
+    entry_ok   = (r.gap_up is True and r.first_candle_bullish is True)
+    verdict    = "エントリー推奨" if entry_ok else "見送り"
+    return (
+        f"前日終値: {prev_str}  寄り付き: {open_str}\n"
+        f"  （{gap_str} / {candle_str}）→ {verdict}"
+    )
 
 
 def _build_entry_message(results: list[EntryCheckResult]) -> str:

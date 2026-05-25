@@ -37,10 +37,11 @@ _SCREEN_WEEKDAY = 5
 _SCREEN_HOUR    = 8
 _SCREEN_MINUTE  = 0
 
-# エントリー判断: 平日（月〜金）09:15 JST
+# エントリー判断: 平日（月〜金）09:10 JST
+# （1分足 9:00 の足が確実に確定するのを待つため 9:05 から 9:10 に変更）
 _ENTRY_WEEKDAY_RANGE = range(0, 5)
 _ENTRY_HOUR          = 9
-_ENTRY_MINUTE        = 15
+_ENTRY_MINUTE        = 10
 
 # ポジション監視: 平日 15:45 JST（大引け後）
 _MONITOR_HOUR   = 15
