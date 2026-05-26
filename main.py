@@ -15,7 +15,7 @@ from datetime import datetime
 import pytz
 from dotenv import load_dotenv
 
-from entry_judge import run_entry_checks, save_candidates
+from entry_judge import run_entry_checks, run_entry_checks_from_watchlist, save_candidates
 from notifier import notify, notify_entry, notify_exit
 from positions import check_exit_signals
 from screener import screen
@@ -51,20 +51,66 @@ _MONITOR_MINUTE = 45
 def run_screening() -> None:
     logger.info("======== スクリーニング開始 ========")
     try:
+        from watchlist_manager import add_screened_candidates
         tickers, names = get_prime_universe()
         candidates = screen(tickers, names)
         notify(candidates)
         save_candidates(candidates)
+        # ウォッチリストに追加（既存の watching/skipped 銘柄は上書きしない）
+        add_screened_candidates(candidates)
     except Exception as e:
         logger.exception("スクリーニングエラー: %s", e)
     logger.info("======== スクリーニング完了 ========")
 
 
 def run_entry() -> None:
+    """
+    watchlist.json の watching 銘柄を毎日チェックし、LINE 通知する。
+
+    フロー:
+      1. 前日 skipped → watching にリセット
+      2. 14日超過エントリーを expired に
+      3. watching 全銘柄のエントリー条件チェック
+      4. 結果に応じて status 更新（passed / skipped / expired）
+      5. LINE 通知
+    """
     logger.info("======== エントリー判断開始 ========")
     try:
-        results = run_entry_checks(check_opening=True)
+        from watchlist_manager import (
+            reset_daily_skipped,
+            expire_old_entries,
+            mark_entry_status,
+        )
+
+        # ステップ1: 前日見送りをリセット
+        reset_daily_skipped()
+
+        # ステップ2: 期限切れを処理
+        expired = expire_old_entries()
+        if expired:
+            logger.info("期限切れ除外: %s", expired)
+
+        # ステップ3: 監視中銘柄をチェック
+        results = run_entry_checks_from_watchlist(check_opening=True)
+
+        if not results:
+            logger.info("監視中銘柄なし、通知をスキップ")
+            return
+
+        # ステップ4: 結果を watchlist に反映
+        for r in results:
+            code = r.ticker.replace(".T", "")
+            if r.all_met:
+                mark_entry_status(code, "passed")
+            elif r.weekly_expired:
+                mark_entry_status(code, "expired")
+                logger.info("週足根拠崩れ → expired: %s %s", code, r.name)
+            else:
+                mark_entry_status(code, "skipped")
+
+        # ステップ5: 通知
         notify_entry(results)
+
     except Exception as e:
         logger.exception("エントリー判断エラー: %s", e)
     logger.info("======== エントリー判断完了 ========")

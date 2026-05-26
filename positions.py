@@ -11,7 +11,7 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -205,6 +205,50 @@ def _check_prev_high_approach(close: pd.Series, registered_at: str) -> tuple[boo
 # ─────────────────────────────────────────────
 # メイン検出
 # ─────────────────────────────────────────────
+
+def update_portfolio_highs() -> None:
+    """
+    15:45 実行。portfolio.json の各アクティブポジションの recent_highs を
+    当日高値で更新し、最大2要素に切り詰めて保存する。
+    """
+    portfolio_path = Path("portfolio.json")
+    if not portfolio_path.exists():
+        return
+
+    try:
+        data = json.loads(portfolio_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("portfolio.json 読み込みエラー: %s", e)
+        return
+
+    updated = False
+    for pos in data.get("positions", []):
+        if pos.get("status") != "active":
+            continue
+        ticker = pos["ticker"]
+        try:
+            df = _fetch_daily(ticker, period="5d")
+            if df.empty:
+                continue
+            today_high = round(float(df["High"].iloc[-1]), 1)
+            recent = pos.get("recent_highs", [])
+            recent.append(today_high)
+            pos["recent_highs"] = recent[-2:]  # 最大2要素
+            updated = True
+            logger.debug("recent_highs 更新: %s → %s", ticker, pos["recent_highs"])
+        except Exception as e:
+            logger.warning("高値更新失敗 %s: %s", ticker, e)
+        time.sleep(1.0)
+
+    if updated:
+        import pytz as _pytz
+        data["updated_at"] = datetime.now(_pytz.timezone("Asia/Tokyo")).isoformat()
+        portfolio_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("portfolio.json recent_highs を更新しました")
+
 
 def check_exit_signals() -> list[ExitSignal]:
     """全ポジションの利益確定シグナルを検出する。"""

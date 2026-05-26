@@ -86,6 +86,10 @@ def _rejection_reasons(r: EntryCheckResult) -> list[str]:
         reasons.append(f"週足5wタッチ{r.weekly_5w_touch_count}回（1〜2回外）")
     if not r.rr_ok:
         reasons.append(f"RR {r.rr_ratio:.1f}（2.0未満）")
+    # 週足根拠崩れは最優先で表示（他の理由は不要）
+    if r.weekly_expired:
+        reasons.append("20週線を割った（監視終了）")
+        return reasons
     if not r.opening_checked:
         reasons.append("寄り付きデータ取得失敗")
     else:

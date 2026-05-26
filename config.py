@@ -33,3 +33,17 @@ PRIME_MARKET_NAME = "プライム（内国株式）"
 # スケジュール（毎週土曜 08:00 JST）
 SCHEDULE_DAY  = "saturday"
 SCHEDULE_TIME = "08:00"
+
+# ─── 資金管理 ───────────────────────────────────────
+CAPITAL       = 1_000_000   # 運用資金（円）
+MAX_POSITIONS = 4           # 最大同時保有ポジション数
+
+STOP_LOSS_PCT_PM = 0.06   # ポジション管理の損切り率 (-6%)
+TARGET_PCT_PM    = 0.12   # 利確目標率 (+12%, RR 1:2)
+
+MORNING_PROFIT_HALFSELL = 2.0    # 半決済推奨の含み益閾値 (%)
+MORNING_ADD_LOT_LOSS    = -3.0   # 追加ロット推奨の含み損閾値 (%)
+MORNING_HEDGE_LOSS      = -5.0   # ヘッジ売り推奨の含み損閾値 (%)
+MORNING_STOPLOSS_LOSS   = -6.0   # 損切り推奨の含み損閾値 (%)
+
+PORTFOLIO_FILE = "portfolio.json"

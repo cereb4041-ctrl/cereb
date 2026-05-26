@@ -74,6 +74,8 @@ class EntryCheckResult:
     rr_ok: bool
     # 総合
     all_met: bool
+    # 監視終了フラグ（20週線を下回った → watchlist を expired に）
+    weekly_expired: bool = False
 
 
 # ─────────────────────────────────────────────
@@ -295,6 +297,7 @@ def check_entry(candidate: dict, check_opening: bool = True) -> EntryCheckResult
     weekly_ma20_up      = False
     weekly_5w_count     = 0
     weekly_5w_valid     = False
+    weekly_expired      = False   # 現在値が20週線を下回った → watchlist を expired に
     if not weekly.empty and len(weekly) >= 25:
         wc    = weekly["Close"].astype(float)
         wma5  = wc.rolling(5).mean()
@@ -302,6 +305,9 @@ def check_entry(candidate: dict, check_opening: bool = True) -> EntryCheckResult
         weekly_ma20_up  = float(wma20.iloc[-1]) > float(wma20.iloc[-5])
         weekly_5w_count = _check_weekly_5w_touch(wma5, wma20)
         weekly_5w_valid = (1 <= weekly_5w_count <= 2)
+        # 株価が20週線を下回ったら週足の根拠崩れ
+        if not pd.isna(wma20.iloc[-1]):
+            weekly_expired = float(wc.iloc[-1]) < float(wma20.iloc[-1])
 
     # ── エントリー価格 / 損切り / RR ─────────
     entry_price  = round(float(dma20.iloc[-1]), 1)
@@ -357,6 +363,7 @@ def check_entry(candidate: dict, check_opening: bool = True) -> EntryCheckResult
         rr_ratio=rr_ratio,
         rr_ok=rr_ok,
         all_met=all_met,
+        weekly_expired=weekly_expired,
     )
 
 
@@ -375,7 +382,7 @@ def _no_data_result(ticker, name, price, check_opening) -> EntryCheckResult:
 
 
 def run_entry_checks(check_opening: bool = True) -> list[EntryCheckResult]:
-    """保存済み候補に対してエントリーチェックを実行する。"""
+    """保存済み候補（candidates.json）に対してエントリーチェックを実行する。"""
     candidates = load_candidates()
     if not candidates:
         logger.info("エントリーチェック: 候補なし")
@@ -393,4 +400,36 @@ def run_entry_checks(check_opening: bool = True) -> list[EntryCheckResult]:
 
     passed = sum(1 for r in results if r.all_met)
     logger.info("エントリー条件通過: %d / %d", passed, len(results))
+    return results
+
+
+def run_entry_checks_from_watchlist(check_opening: bool = True) -> list[EntryCheckResult]:
+    """
+    watchlist.json の watching 銘柄に対してエントリーチェックを実行する。
+    （スケジューラから呼び出される。candidates.json は使用しない。）
+    """
+    from watchlist_manager import get_watching_entries
+    entries = get_watching_entries()
+    if not entries:
+        logger.info("ウォッチリスト: 監視中銘柄なし")
+        return []
+
+    results = []
+    for idx, e in enumerate(entries, 1):
+        ticker = e.get("ticker") or f"{e['code']}.T"
+        candidate = {
+            "ticker": ticker,
+            "name": e.get("name", e["code"]),
+            "price": e.get("price", 0.0),
+        }
+        logger.info("ウォッチリストチェック %d/%d: %s", idx, len(entries), ticker)
+        try:
+            result = check_entry(candidate, check_opening=check_opening)
+            results.append(result)
+        except Exception as ex:
+            logger.warning("ウォッチリストチェックエラー %s: %s", ticker, ex)
+        time.sleep(1.0)
+
+    passed = sum(1 for r in results if r.all_met)
+    logger.info("ウォッチリストチェック通過: %d / %d", passed, len(results))
     return results
