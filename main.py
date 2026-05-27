@@ -68,11 +68,12 @@ def run_entry() -> None:
     watchlist.json の watching 銘柄を毎日チェックし、LINE 通知する。
 
     フロー:
+      0. watchlist 空なら candidates.json から自動移行（Railway 再デプロイ対策）
       1. 前日 skipped → watching にリセット
       2. 14日超過エントリーを expired に
       3. watching 全銘柄のエントリー条件チェック
       4. 結果に応じて status 更新（passed / skipped / expired）
-      5. LINE 通知
+      5. LINE 通知（候補なしでも通知して動作確認できるようにする）
     """
     logger.info("======== エントリー判断開始 ========")
     try:
@@ -80,7 +81,19 @@ def run_entry() -> None:
             reset_daily_skipped,
             expire_old_entries,
             mark_entry_status,
+            get_watching_entries,
+            migrate_from_candidates_json,
         )
+        from entry_judge import CANDIDATES_FILE
+
+        # ステップ0: watchlist が空なら candidates.json から自動移行
+        # （Railway 再デプロイ後にファイルが消えた場合の復旧）
+        if not get_watching_entries():
+            n = migrate_from_candidates_json(CANDIDATES_FILE)
+            if n:
+                logger.info("watchlist を candidates.json から自動復元: %d 銘柄", n)
+            else:
+                logger.info("candidates.json も空 → 土曜スクリーニング待ち")
 
         # ステップ1: 前日見送りをリセット
         reset_daily_skipped()
@@ -93,10 +106,6 @@ def run_entry() -> None:
         # ステップ3: 監視中銘柄をチェック
         results = run_entry_checks_from_watchlist(check_opening=True)
 
-        if not results:
-            logger.info("監視中銘柄なし、通知をスキップ")
-            return
-
         # ステップ4: 結果を watchlist に反映
         for r in results:
             code = r.ticker.replace(".T", "")
@@ -108,7 +117,7 @@ def run_entry() -> None:
             else:
                 mark_entry_status(code, "skipped")
 
-        # ステップ5: 通知
+        # ステップ5: 通知（candidates もなければ "候補なし" を送り、システム稼働を確認できるようにする）
         notify_entry(results)
 
     except Exception as e:

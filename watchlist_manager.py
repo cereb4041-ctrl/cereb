@@ -171,6 +171,67 @@ def mark_entry_status(code: str, status: str) -> None:
     logger.warning("watchlist に %s が見つかりません（mark_entry_status）", code)
 
 
+def migrate_from_candidates_json(candidates_file: Path) -> int:
+    """
+    Railway 再デプロイ後などで watchlist が空になった場合に、
+    candidates.json が存在すれば watchlist へ自動移行する。
+
+    Returns: 追加した銘柄数
+    """
+    if not candidates_file.exists():
+        logger.info("candidates.json が見つかりません（移行スキップ）")
+        return 0
+
+    try:
+        raw = json.loads(candidates_file.read_text(encoding="utf-8"))
+        candidates_data = raw.get("candidates", [])
+        if not candidates_data:
+            logger.info("candidates.json に銘柄なし（移行スキップ）")
+            return 0
+
+        screened_date = raw.get("date", date.today().isoformat())
+        wl = load_watchlist()
+        active_codes = {
+            e["code"] for e in wl["watchlist"]
+            if e.get("status") in ("watching", "skipped")
+        }
+
+        added = 0
+        for c in candidates_data:
+            code = c["ticker"].replace(".T", "")
+            if code in active_codes:
+                continue
+            entry = {
+                "code": code,
+                "ticker": c["ticker"],
+                "name": c.get("name", code),
+                "screened_date": screened_date,
+                "status": "watching",
+                "price": c.get("price", 0.0),
+                "touch_count": c.get("touch_count", 1),
+                "weekly_ma20": c.get("weekly_ma20", 0.0),
+                "pullback_pct": c.get("pullback_pct", 0.0),
+                "lot_suggest": 0,
+                "stop_loss": 0.0,
+                "target": 0.0,
+                "ma20w": c.get("weekly_ma20", 0.0),
+            }
+            wl["watchlist"].append(entry)
+            added += 1
+
+        if added:
+            save_watchlist(wl)
+            logger.info(
+                "candidates.json（%s）→ watchlist 自動移行: %d 銘柄",
+                screened_date, added,
+            )
+        return added
+
+    except Exception as e:
+        logger.warning("candidates.json 移行エラー: %s", e)
+        return 0
+
+
 # ─────────────────────────────────────────────
 # portfolio.json 書き込み
 # ─────────────────────────────────────────────

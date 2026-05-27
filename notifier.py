@@ -119,6 +119,15 @@ def _opening_line(r: EntryCheckResult) -> str:
 
 def _build_entry_message(results: list[EntryCheckResult]) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
+
+    # watchlist が空（candidates.json もない）場合
+    if not results:
+        return (
+            f"【エントリー判断】{today}\n\n"
+            "監視候補なし\n"
+            "（次回土曜スクリーニングまで待機中）"
+        )
+
     passing = [r for r in results if r.all_met]
 
     lines = [f"【エントリー判断】{today}", ""]
