@@ -203,7 +203,12 @@ def _check_weekly_5w_touch(ma5: pd.Series, ma20: pd.Series) -> int:
 
 def _fetch_opening(ticker: str) -> tuple[Optional[bool], Optional[bool], Optional[float], Optional[float]]:
     """
-    当日の寄り付き判断（1分足、9:00〜9:05 の最初の足を使用）。
+    当日の寄り付き判断。
+
+    1分足を優先し取得できなければ5分足にフォールバックする。
+    yf.download() ではなく Ticker.history() を使用（イントラデーに安定）。
+    period="2d" にすることで当日の部分的セッションデータを確実に含める
+    （period="1d" は前日の完結セッションのみ返す場合がある）。
 
     Returns (gap_up, first_candle_bullish, prev_close, open_price)
       gap_up             : True=GU, False=GD, None=フラット
@@ -213,30 +218,46 @@ def _fetch_opening(ticker: str) -> tuple[Optional[bool], Optional[bool], Optiona
     全て None の場合はデータ取得失敗。
     """
     try:
-        df1 = _fetch(ticker, period="1d", interval="1m")
+        # 前日終値は日足で取得（_fetch / yf.download でOK）
         daily = _fetch(ticker, period="3d", interval="1d")
-        if df1.empty or daily.empty or len(daily) < 2:
-            logger.debug("%s: 1分足または日足データなし", ticker)
+        if daily.empty or len(daily) < 2:
+            logger.debug("%s: 日足データなし", ticker)
             return None, None, None, None
-
         prev_close = float(daily["Close"].dropna().iloc[-2])
-
-        # タイムゾーン変換
-        if df1.index.tzinfo is None:
-            df1.index = df1.index.tz_localize("UTC")
-        df1.index = df1.index.tz_convert(JST)
 
         today = pd.Timestamp.now(tz=JST).date()
 
-        # 9:00〜9:05 の足を抽出（最初の足 = 寄り付き）
-        opening_bars = df1[
-            (df1.index.date == today)
-            & (df1.index.hour == 9)
-            & (df1.index.minute < 5)
-        ]
+        # 1分足 → 5分足 の順で当日 9:00-9:15 の足を探す
+        t = yf.Ticker(ticker)
+        opening_bars: Optional[pd.DataFrame] = None
+        used_interval = ""
 
-        if opening_bars.empty:
-            logger.debug("%s: 9:00-9:05 の1分足データなし（当日=%s）", ticker, today)
+        for interval in ("1m", "5m"):
+            try:
+                df = t.history(period="2d", interval=interval)
+                if df.empty:
+                    continue
+                # Ticker.history() は通常 JST になっているが念のず変換
+                if df.index.tzinfo is None:
+                    df.index = df.index.tz_localize("UTC")
+                df.index = df.index.tz_convert(JST)
+
+                # 当日 9:00〜9:15 の足を抽出（タイムラグ対策で 9:05 以外も許容）
+                bars = df[
+                    (df.index.date == today)
+                    & (df.index.hour == 9)
+                    & (df.index.minute < 15)
+                ]
+                if not bars.empty:
+                    opening_bars = bars
+                    used_interval = interval
+                    break
+            except Exception as e:
+                logger.debug("%s: %s足取得エラー: %s", ticker, interval, e)
+                continue
+
+        if opening_bars is None or opening_bars.empty:
+            logger.debug("%s: 寄り付きデータなし（当日=%s）", ticker, today)
             return None, None, None, None
 
         first = opening_bars.iloc[0]
@@ -246,16 +267,16 @@ def _fetch_opening(ticker: str) -> tuple[Optional[bool], Optional[bool], Optiona
         # GU/GD/フラット判定（前日終値との差が GAP_THRESHOLD 以上でGU/GD）
         diff = (open_price - prev_close) / prev_close
         if diff > GAP_THRESHOLD:
-            gap_up = True    # ギャップアップ
+            gap_up = True
         elif diff < -GAP_THRESHOLD:
-            gap_up = False   # ギャップダウン
+            gap_up = False
         else:
-            gap_up = None    # フラット
+            gap_up = None
 
         first_candle_bullish = close_price > open_price
         logger.debug(
-            "%s: 寄り付き=%.0f 前日終値=%.0f gap=%s 陽線=%s",
-            ticker, open_price, prev_close, gap_up, first_candle_bullish
+            "%s [%s]: 寄り付き=%.0f 前日終値=%.0f gap=%s 陽線=%s",
+            ticker, used_interval, open_price, prev_close, gap_up, first_candle_bullish,
         )
         return gap_up, first_candle_bullish, prev_close, open_price
 
