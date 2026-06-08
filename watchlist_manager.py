@@ -92,6 +92,7 @@ def add_screened_candidates(candidates: list) -> None:
             "name": c.name,
             "screened_date": today,
             "status": "watching",
+            "fetch_fail_count": 0,
             "price": c.price,
             "touch_count": c.touch_count,
             "weekly_ma20": round(c.weekly_ma20, 1),
@@ -158,6 +159,35 @@ def expire_old_entries() -> list[str]:
     return expired_codes
 
 
+FETCH_FAIL_LIMIT = 3   # 連続取得失敗でexpiredにする閾値
+
+
+def increment_fetch_fail(code: str) -> int:
+    """
+    寄り付きデータ取得失敗カウントを +1 して返す。
+    翌日リトライ → 3連続失敗で expired へ移行する判断に使う。
+    """
+    data = load_watchlist()
+    for e in data["watchlist"]:
+        if e["code"] == code:
+            count = e.get("fetch_fail_count", 0) + 1
+            e["fetch_fail_count"] = count
+            save_watchlist(data)
+            return count
+    return 0
+
+
+def reset_fetch_fail(code: str) -> None:
+    """寄り付きデータが取得できた（または条件チェック済み）ときにカウントをリセット。"""
+    data = load_watchlist()
+    for e in data["watchlist"]:
+        if e["code"] == code:
+            if e.get("fetch_fail_count", 0) != 0:
+                e["fetch_fail_count"] = 0
+                save_watchlist(data)
+            return
+
+
 def mark_entry_status(code: str, status: str) -> None:
     """watchlist エントリーの status を更新する。"""
     data = load_watchlist()
@@ -207,6 +237,7 @@ def migrate_from_candidates_json(candidates_file: Path) -> int:
                 "name": c.get("name", code),
                 "screened_date": screened_date,
                 "status": "watching",
+                "fetch_fail_count": 0,
                 "price": c.get("price", 0.0),
                 "touch_count": c.get("touch_count", 1),
                 "weekly_ma20": c.get("weekly_ma20", 0.0),

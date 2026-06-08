@@ -83,6 +83,9 @@ def run_entry() -> None:
             mark_entry_status,
             get_watching_entries,
             migrate_from_candidates_json,
+            increment_fetch_fail,
+            reset_fetch_fail,
+            FETCH_FAIL_LIMIT,
         )
         from entry_judge import CANDIDATES_FILE
 
@@ -110,11 +113,32 @@ def run_entry() -> None:
         for r in results:
             code = r.ticker.replace(".T", "")
             if r.all_met:
+                reset_fetch_fail(code)
                 mark_entry_status(code, "passed")
+
             elif r.weekly_expired:
                 mark_entry_status(code, "expired")
                 logger.info("週足根拠崩れ → expired: %s %s", code, r.name)
+
+            elif not r.opening_checked:
+                # 寄り付きデータ取得失敗 → カウント加算、閾値超えで expired
+                fail_count = increment_fetch_fail(code)
+                if fail_count >= FETCH_FAIL_LIMIT:
+                    mark_entry_status(code, "expired")
+                    logger.info(
+                        "寄り付き取得 %d日連続失敗 → expired: %s %s",
+                        fail_count, code, r.name,
+                    )
+                else:
+                    mark_entry_status(code, "skipped")   # 翌日リトライ
+                    logger.info(
+                        "寄り付き取得失敗（%d/%d）翌日リトライ: %s %s",
+                        fail_count, FETCH_FAIL_LIMIT, code, r.name,
+                    )
+
             else:
+                # データは取得できたが条件未達 → 失敗カウントリセットして翌日再チェック
+                reset_fetch_fail(code)
                 mark_entry_status(code, "skipped")
 
         # ステップ5: 通知（candidates もなければ "候補なし" を送り、システム稼働を確認できるようにする）
