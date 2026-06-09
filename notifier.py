@@ -316,3 +316,45 @@ def _send(message: str) -> None:
             logger.error("LINE送信エラー (HTTP %s): %s", resp.status_code, resp.text)
         except Exception as e:
             logger.error("LINE送信例外: %s", e)
+
+
+def notify_treasure(results: list[dict], is_friday: bool = False) -> None:
+    """
+    お宝銘柄スクリーニング結果をLINEに送信。
+
+    Parameters
+    ----------
+    results   : treasure_screener.run_treasure_screening() の戻り値
+    is_friday : 金曜日なら信用残確認の促しを追記
+    """
+    if not results:
+        msg = "【お宝候補】\n該当銘柄なし"
+        print("\n" + "=" * 50)
+        print(msg)
+        print("=" * 50 + "\n")
+        _send(msg)
+        return
+
+    lines = [f"【お宝候補】{len(results)}銘柄\n"]
+
+    for r in results:
+        code = r["code"].replace(".T", "")
+        lines.append(
+            f"▶ {code} {r['name']}\n"
+            f"  終値 {r['close']:,.0f}円\n"
+            f"  出来高 {r['vol_ratio']}倍 / ボラ {r['avg_range_pct']}%\n"
+        )
+
+    if is_friday:
+        lines.append(
+            "\n📋 金曜チェック推奨:\n"
+            "上記銘柄の信用売り残をkabuplusで確認\n"
+            "→ https://kabuplus.com/stock/\n"
+            "売り残急増 + 上記2条件 = 踏み上げ候補"
+        )
+
+    message = "\n".join(lines)
+    print("\n" + "=" * 50)
+    print(message)
+    print("=" * 50 + "\n")
+    _send(message)

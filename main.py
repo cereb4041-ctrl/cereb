@@ -16,7 +16,7 @@ import pytz
 from dotenv import load_dotenv
 
 from entry_judge import run_entry_checks, run_entry_checks_from_watchlist, save_candidates
-from notifier import notify, notify_entry, notify_exit
+from notifier import notify, notify_entry, notify_exit, notify_treasure
 from positions import check_exit_signals
 from screener import screen
 from universe import get_prime_universe
@@ -46,6 +46,10 @@ _ENTRY_MINUTE        = 15
 # ポジション監視: 平日 15:45 JST（大引け後）
 _MONITOR_HOUR   = 15
 _MONITOR_MINUTE = 45
+
+# お宝スクリーニング: 平日 15:30 JST（引け後）
+_TREASURE_HOUR   = 15
+_TREASURE_MINUTE = 30
 
 
 def run_screening() -> None:
@@ -149,6 +153,21 @@ def run_entry() -> None:
     logger.info("======== エントリー判断完了 ========")
 
 
+def run_treasure() -> None:
+    """お宝銘柄スクリーニングを実行してLINE通知。平日15:30 JST に実行。"""
+    logger.info("======== お宝スクリーニング開始 ========")
+    try:
+        from treasure_screener import run_treasure_screening
+        tickers, names = get_prime_universe()
+        names_dict = dict(zip(tickers, names))
+        is_friday = (_now_jst().weekday() == 4)
+        results = run_treasure_screening(tickers, names=names_dict, is_friday=is_friday)
+        notify_treasure(results, is_friday=is_friday)
+    except Exception as e:
+        logger.exception("お宝スクリーニングエラー: %s", e)
+    logger.info("======== お宝スクリーニング完了 ========")
+
+
 def run_monitor() -> None:
     logger.info("======== ポジション監視開始 ========")
     try:
@@ -178,9 +197,10 @@ def _scheduler_loop() -> None:
         _MONITOR_HOUR, _MONITOR_MINUTE,
     )
 
-    last_screen_date  = None
-    last_entry_date   = None
-    last_monitor_date = None
+    last_screen_date   = None
+    last_entry_date    = None
+    last_monitor_date  = None
+    last_treasure_date = None
 
     while True:
         now = _now_jst()
@@ -206,6 +226,13 @@ def _scheduler_loop() -> None:
             last_monitor_date = now.date()
             run_monitor()
 
+        if (now.weekday() in _ENTRY_WEEKDAY_RANGE
+                and now.hour == _TREASURE_HOUR
+                and now.minute == _TREASURE_MINUTE
+                and last_treasure_date != now.date()):
+            last_treasure_date = now.date()
+            run_treasure()
+
         time.sleep(60)
 
 
@@ -220,6 +247,10 @@ def main() -> None:
 
     if "--monitor" in sys.argv:
         run_monitor()
+        return
+
+    if "--treasure" in sys.argv:
+        run_treasure()
         return
 
     # スケジューラをバックグラウンドスレッドで起動
