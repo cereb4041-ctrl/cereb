@@ -210,30 +210,32 @@ def _scheduler_loop() -> None:
     while True:
         now = _now_jst()
 
+        # 各ジョブは「指定時刻から5分以内」に一度だけ実行する。
+        # sleep(60) のドリフトや Railway 再起動で minute==X を踏み損ねる問題を防ぐ。
         if (now.weekday() == _SCREEN_WEEKDAY
                 and now.hour == _SCREEN_HOUR
-                and now.minute == _SCREEN_MINUTE
+                and _SCREEN_MINUTE <= now.minute < _SCREEN_MINUTE + 5
                 and last_screen_date != now.date()):
             last_screen_date = now.date()
             run_screening()
 
         if (now.weekday() in _ENTRY_WEEKDAY_RANGE
                 and now.hour == _ENTRY_HOUR
-                and now.minute == _ENTRY_MINUTE
+                and _ENTRY_MINUTE <= now.minute < _ENTRY_MINUTE + 5
                 and last_entry_date != now.date()):
             last_entry_date = now.date()
             run_entry()
 
         if (now.weekday() in _ENTRY_WEEKDAY_RANGE
                 and now.hour == _MONITOR_HOUR
-                and now.minute == _MONITOR_MINUTE
+                and _MONITOR_MINUTE <= now.minute < _MONITOR_MINUTE + 5
                 and last_monitor_date != now.date()):
             last_monitor_date = now.date()
             run_monitor()
 
         if (now.weekday() in _ENTRY_WEEKDAY_RANGE
                 and now.hour == _TREASURE_HOUR
-                and now.minute == _TREASURE_MINUTE
+                and _TREASURE_MINUTE <= now.minute < _TREASURE_MINUTE + 5
                 and last_treasure_date != now.date()):
             last_treasure_date = now.date()
             run_treasure()
