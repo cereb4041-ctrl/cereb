@@ -318,6 +318,45 @@ def _send(message: str) -> None:
             logger.error("LINE送信例外: %s", e)
 
 
+def notify_treasure_chart(chart_results: list[dict]) -> None:
+    """お宝×チャート診断結果をLINEに送信。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if not chart_results:
+        _send(f"【お宝×チャート診断】{today}\n\n診断対象なし")
+        return
+
+    def ok(b: bool) -> str:
+        return "✓" if b else "✗"
+
+    lines = [f"【お宝×チャート診断】{today}", ""]
+
+    for r in chart_results:
+        code = r["code"].replace(".T", "")
+        touch_str   = f"{r['weekly_5w_count']}回目/{ok(r['weekly_5w_ok'])}"
+        pullback_str = (
+            f"-{r['pullback_pct']}%/{ok(r['pullback_ok'])}"
+            if r["pullback_pct"] is not None
+            else f"-/{ok(r['pullback_ok'])}"
+        )
+        lines.append(
+            f"► {code} {r['name']}\n"
+            f"  週足PO：{ok(r['weekly_po'])}  20週線上向：{ok(r['weekly_ma20_up'])}\n"
+            f"  5wタッチ：{touch_str}\n"
+            f"  日足60↑：{ok(r['daily_ma60_up'])}  日足PO：{ok(r['daily_po'])}\n"
+            f"  押し目：{pullback_str}\n"
+            f"  出来高10万↑：{ok(r['volume_ok'])}  株価5000以下：{ok(r['price_ok'])}\n"
+            f"  スコア：{r['score']}/8  {r['verdict']}"
+        )
+        lines.append("")
+
+    message = "\n".join(lines)
+    print("\n" + "=" * 50)
+    print(message)
+    print("=" * 50 + "\n")
+    _send(message)
+
+
 def notify_treasure(results: list[dict], is_friday: bool = False) -> None:
     """
     お宝銘柄スクリーニング結果をLINEに送信。

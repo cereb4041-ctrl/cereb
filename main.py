@@ -157,12 +157,17 @@ def run_treasure() -> None:
     """お宝銘柄スクリーニングを実行してLINE通知。平日15:30 JST に実行。"""
     logger.info("======== お宝スクリーニング開始 ========")
     try:
-        from treasure_screener import run_treasure_screening
+        from treasure_screener import run_treasure_screening, run_chart_checks
+        from notifier import notify_treasure_chart
         tickers, names = get_prime_universe()
         names_dict = dict(zip(tickers, names))
         is_friday = (_now_jst().weekday() == 4)
         results = run_treasure_screening(tickers, names=names_dict, is_friday=is_friday)
         notify_treasure(results, is_friday=is_friday)
+        # お宝候補があればチャート診断を続けて送信
+        if results:
+            chart = run_chart_checks(results)
+            notify_treasure_chart(chart)
     except Exception as e:
         logger.exception("お宝スクリーニングエラー: %s", e)
     logger.info("======== お宝スクリーニング完了 ========")
