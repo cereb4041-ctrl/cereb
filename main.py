@@ -210,11 +210,11 @@ def _scheduler_loop() -> None:
     while True:
         now = _now_jst()
 
-        # 各ジョブは「指定時刻から5分以内」に一度だけ実行する。
-        # sleep(60) のドリフトや Railway 再起動で minute==X を踏み損ねる問題を防ぐ。
+        # 各ジョブは last_XXX_date で1日1回に制限する。
+        # 土曜スクリーニングは「8:00以降の土曜中いつでも」とする。
+        # Railway 再起動タイミングに関わらず確実に実行するため hour >= を使う。
         if (now.weekday() == _SCREEN_WEEKDAY
-                and now.hour == _SCREEN_HOUR
-                and _SCREEN_MINUTE <= now.minute < _SCREEN_MINUTE + 5
+                and now.hour >= _SCREEN_HOUR
                 and last_screen_date != now.date()):
             last_screen_date = now.date()
             run_screening()
