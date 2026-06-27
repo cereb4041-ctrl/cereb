@@ -208,37 +208,41 @@ def _scheduler_loop() -> None:
     last_treasure_date = None
 
     while True:
-        now = _now_jst()
+        try:
+            now = _now_jst()
 
-        # 各ジョブは last_XXX_date で1日1回に制限する。
-        # 土曜スクリーニングは「8:00以降の土曜中いつでも」とする。
-        # Railway 再起動タイミングに関わらず確実に実行するため hour >= を使う。
-        if (now.weekday() == _SCREEN_WEEKDAY
-                and now.hour >= _SCREEN_HOUR
-                and last_screen_date != now.date()):
-            last_screen_date = now.date()
-            run_screening()
+            # 各ジョブは last_XXX_date で1日1回に制限する。
+            # 土曜スクリーニングは「8:00以降の土曜中いつでも」とする。
+            # Railway 再起動タイミングに関わらず確実に実行するため hour >= を使う。
+            if (now.weekday() == _SCREEN_WEEKDAY
+                    and now.hour >= _SCREEN_HOUR
+                    and last_screen_date != now.date()):
+                last_screen_date = now.date()
+                run_screening()
 
-        if (now.weekday() in _ENTRY_WEEKDAY_RANGE
-                and now.hour == _ENTRY_HOUR
-                and _ENTRY_MINUTE <= now.minute < _ENTRY_MINUTE + 5
-                and last_entry_date != now.date()):
-            last_entry_date = now.date()
-            run_entry()
+            if (now.weekday() in _ENTRY_WEEKDAY_RANGE
+                    and now.hour == _ENTRY_HOUR
+                    and _ENTRY_MINUTE <= now.minute < _ENTRY_MINUTE + 5
+                    and last_entry_date != now.date()):
+                last_entry_date = now.date()
+                run_entry()
 
-        if (now.weekday() in _ENTRY_WEEKDAY_RANGE
-                and now.hour == _MONITOR_HOUR
-                and _MONITOR_MINUTE <= now.minute < _MONITOR_MINUTE + 5
-                and last_monitor_date != now.date()):
-            last_monitor_date = now.date()
-            run_monitor()
+            if (now.weekday() in _ENTRY_WEEKDAY_RANGE
+                    and now.hour == _MONITOR_HOUR
+                    and _MONITOR_MINUTE <= now.minute < _MONITOR_MINUTE + 5
+                    and last_monitor_date != now.date()):
+                last_monitor_date = now.date()
+                run_monitor()
 
-        if (now.weekday() in _ENTRY_WEEKDAY_RANGE
-                and now.hour == _TREASURE_HOUR
-                and _TREASURE_MINUTE <= now.minute < _TREASURE_MINUTE + 5
-                and last_treasure_date != now.date()):
-            last_treasure_date = now.date()
-            run_treasure()
+            if (now.weekday() in _ENTRY_WEEKDAY_RANGE
+                    and now.hour == _TREASURE_HOUR
+                    and _TREASURE_MINUTE <= now.minute < _TREASURE_MINUTE + 5
+                    and last_treasure_date != now.date()):
+                last_treasure_date = now.date()
+                run_treasure()
+
+        except Exception as e:
+            logger.exception("スケジューラ予期せぬエラー（継続）: %s", e)
 
         time.sleep(60)
 
