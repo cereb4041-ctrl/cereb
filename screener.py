@@ -2,6 +2,7 @@
 テクニカル分析スクリーニングモジュール。
 パーフェクトオーダー / 20週線タッチ / 日足押し目 の3条件を判定する。
 """
+import gc
 import logging
 import time
 from dataclasses import dataclass, field
@@ -155,6 +156,8 @@ def screen(tickers: list[str], names: dict[str, str]) -> list[Candidate]:
         if idx % config.BATCH_SIZE == 0:
             logger.info("進捗: %d / %d", idx, total)
             time.sleep(config.BATCH_SLEEP)
+            # Railway の OOM 対策: 定期的に不要な DataFrame を解放する
+            gc.collect()
 
         # 週足チェック
         weekly_result = _check_weekly(ticker)

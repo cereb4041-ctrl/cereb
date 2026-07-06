@@ -2,6 +2,7 @@
 東証プライム銘柄ユニバース取得モジュール。
 JPX公開Excelから銘柄リストを取得し、出来高・株価でフィルタリングする。
 """
+import gc
 import logging
 import time
 
@@ -54,7 +55,7 @@ def filter_by_volume_and_price(tickers: list[str]) -> list[str]:
     logger.info("出来高・株価フィルタ適用中（対象: %d 銘柄）...", len(tickers))
 
     passed = []
-    batch_size = 200  # バルクDL用は大きめバッチ
+    batch_size = 100  # Railway の OOM 対策でバッチを縮小（200 → 100）
 
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i : i + batch_size]
@@ -93,6 +94,9 @@ def filter_by_volume_and_price(tickers: list[str]) -> list[str]:
             except (KeyError, IndexError):
                 continue
 
+        # OOM 対策: バッチの大きな DataFrame を即座に解放する
+        del raw
+        gc.collect()
         time.sleep(1.0)  # バッチ間スリープ
 
     logger.info("フィルタ通過銘柄数: %d / %d", len(passed), len(tickers))
