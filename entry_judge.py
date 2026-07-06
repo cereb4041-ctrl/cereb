@@ -85,8 +85,10 @@ class EntryCheckResult:
 def save_candidates(candidates: list) -> None:
     """CandidateオブジェクトのリストをJSONに保存する。"""
     from dataclasses import asdict
+    from datetime import datetime
     data = {
-        "date": date.today().isoformat(),
+        # Railway(UTC) でも日付がズレないよう JST 基準にする
+        "date": datetime.now(JST).date().isoformat(),
         "candidates": [asdict(c) for c in candidates],
     }
     CANDIDATES_FILE.write_text(
@@ -360,7 +362,8 @@ def check_entry(candidate: dict, check_opening: bool = True) -> EntryCheckResult
             and gap_up is True
             and first_candle_bullish is True
         )
-    all_met = basic and opening_pass
+    # 20週線を割った銘柄は他の条件を満たしてもエントリー推奨しない
+    all_met = basic and opening_pass and not weekly_expired
 
     return EntryCheckResult(
         ticker=ticker, name=name, price=price,

@@ -159,10 +159,10 @@ def run_treasure() -> None:
     try:
         from treasure_screener import run_treasure_screening, run_chart_checks
         from notifier import notify_treasure_chart
+        # get_prime_universe() は (tickers, names辞書) を返す。names はそのまま渡す
         tickers, names = get_prime_universe()
-        names_dict = dict(zip(tickers, names))
         is_friday = (_now_jst().weekday() == 4)
-        results = run_treasure_screening(tickers, names=names_dict, is_friday=is_friday)
+        results = run_treasure_screening(tickers, names=names, is_friday=is_friday)
         notify_treasure(results, is_friday=is_friday)
         # お宝候補があればチャート診断を続けて送信
         if results:
@@ -220,23 +220,24 @@ def _scheduler_loop() -> None:
                 last_screen_date = now.date()
                 run_screening()
 
+            # エントリー判断は寄り付き直後の情報が必要なので 9:15〜9:59 に限定
+            # （それ以降に届いても行動できないため、遅すぎる場合はスキップ）
             if (now.weekday() in _ENTRY_WEEKDAY_RANGE
                     and now.hour == _ENTRY_HOUR
-                    and _ENTRY_MINUTE <= now.minute < _ENTRY_MINUTE + 5
+                    and now.minute >= _ENTRY_MINUTE
                     and last_entry_date != now.date()):
                 last_entry_date = now.date()
                 run_entry()
 
+            # 監視・お宝は引け後データを使うため「指定時刻以降なら当日中いつでも」
             if (now.weekday() in _ENTRY_WEEKDAY_RANGE
-                    and now.hour == _MONITOR_HOUR
-                    and _MONITOR_MINUTE <= now.minute < _MONITOR_MINUTE + 5
+                    and (now.hour, now.minute) >= (_MONITOR_HOUR, _MONITOR_MINUTE)
                     and last_monitor_date != now.date()):
                 last_monitor_date = now.date()
                 run_monitor()
 
             if (now.weekday() in _ENTRY_WEEKDAY_RANGE
-                    and now.hour == _TREASURE_HOUR
-                    and _TREASURE_MINUTE <= now.minute < _TREASURE_MINUTE + 5
+                    and (now.hour, now.minute) >= (_TREASURE_HOUR, _TREASURE_MINUTE)
                     and last_treasure_date != now.date()):
                 last_treasure_date = now.date()
                 run_treasure()

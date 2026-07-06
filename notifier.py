@@ -6,6 +6,7 @@ import logging
 import os
 from datetime import datetime
 
+import pytz
 import requests
 
 from screener import Candidate
@@ -13,6 +14,13 @@ from entry_judge import EntryCheckResult
 from positions import ExitSignal
 
 logger = logging.getLogger(__name__)
+
+_JST = pytz.timezone("Asia/Tokyo")
+
+
+def _today_str() -> str:
+    """JST基準の今日の日付文字列。Railway(UTC)でも日付がズレないようにする。"""
+    return datetime.now(_JST).strftime("%Y-%m-%d")
 
 _LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 _MAX_MESSAGE_LEN = 4000  # 1リクエストあたりの最大文字数（API上限5000、余裕をもって4000）
@@ -34,7 +42,7 @@ def _split_message(text: str, max_len: int = _MAX_MESSAGE_LEN) -> list[str]:
 
 
 def _build_message(candidates: list[Candidate]) -> str:
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _today_str()
 
     if not candidates:
         return f"【スクリーニング結果】{today}\n\n該当銘柄なし"
@@ -118,7 +126,7 @@ def _opening_line(r: EntryCheckResult) -> str:
 
 
 def _build_entry_message(results: list[EntryCheckResult]) -> str:
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _today_str()
 
     # watchlist が空（candidates.json もない）場合
     if not results:
@@ -172,7 +180,7 @@ def _build_entry_message(results: list[EntryCheckResult]) -> str:
 
 
 def _build_exit_message(signals: list[ExitSignal]) -> str:
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _today_str()
     lines = [f"【利益確定アラート】{today}", ""]
 
     if not signals:
@@ -247,7 +255,7 @@ def notify_morning_report(report_text: str) -> None:
 
 def notify_watchlist_registered(entries: list[dict]) -> None:
     """土曜スクリーニング後：watchlist 自動登録結果を LINE に送信する。"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _today_str()
 
     if not entries:
         message = f"【ウォッチリスト登録】{today}\n\n登録銘柄なし（エントリー条件通過ゼロ）"
@@ -271,7 +279,7 @@ def notify_watchlist_registered(entries: list[dict]) -> None:
 
 def notify_entry_recommendation(entries: list[dict]) -> None:
     """月曜寄り付き確認後：エントリー推奨を LINE に送信する。"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _today_str()
     lines = [f"【本日エントリー推奨】{today}", ""]
 
     for e in entries:
@@ -320,7 +328,7 @@ def _send(message: str) -> None:
 
 def notify_treasure_chart(chart_results: list[dict]) -> None:
     """お宝×チャート診断結果をLINEに送信。"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _today_str()
 
     if not chart_results:
         _send(f"【お宝×チャート診断】{today}\n\n診断対象なし")

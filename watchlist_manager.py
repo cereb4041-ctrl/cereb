@@ -13,7 +13,16 @@ import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import pytz
+
 logger = logging.getLogger(__name__)
+
+_JST = pytz.timezone("Asia/Tokyo")
+
+
+def _today_jst() -> date:
+    """JST基準の今日。Railway(UTC)でも screened_date・期限計算がズレないようにする。"""
+    return datetime.now(_JST).date()
 
 WATCHLIST_FILE = Path("watchlist.json")
 PORTFOLIO_FILE = Path("portfolio.json")
@@ -79,7 +88,7 @@ def add_screened_candidates(candidates: list) -> None:
         if e.get("status") in ("watching", "skipped")
     }
 
-    today = date.today().isoformat()
+    today = _today_jst().isoformat()
     added = 0
     for c in candidates:
         code = c.ticker.replace(".T", "")
@@ -135,7 +144,7 @@ def expire_old_entries() -> list[str]:
     Returns: 期限切れになったコードのリスト
     """
     data = load_watchlist()
-    today = date.today()
+    today = _today_jst()
     expired_codes: list[str] = []
 
     for e in data["watchlist"]:
@@ -219,7 +228,7 @@ def migrate_from_candidates_json(candidates_file: Path) -> int:
             logger.info("candidates.json に銘柄なし（移行スキップ）")
             return 0
 
-        screened_date = raw.get("date", date.today().isoformat())
+        screened_date = raw.get("date", _today_jst().isoformat())
         wl = load_watchlist()
         active_codes = {
             e["code"] for e in wl["watchlist"]
@@ -285,7 +294,7 @@ def add_to_portfolio(
         "lot_type": "打診",
         "stop_loss": watchlist_entry["stop_loss"],
         "target": watchlist_entry["target"],
-        "entry_date": date.today().isoformat(),
+        "entry_date": _today_jst().isoformat(),
         "status": "active",
         "weekly_ma20": watchlist_entry["ma20w"],
         "prev_high": None,
