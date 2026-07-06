@@ -148,6 +148,16 @@ def run_entry() -> None:
         # ステップ5: 通知（candidates もなければ "候補なし" を送り、システム稼働を確認できるようにする）
         notify_entry(results)
 
+        # ステップ6: 通過銘柄をペーパートレードの仮想建玉にする
+        passed = [r for r in results if r.all_met]
+        if passed:
+            from paper_trader import open_paper_positions, build_paper_report
+            from notifier import notify_paper
+            opened = open_paper_positions(passed)
+            report = build_paper_report(opened=opened)
+            if report:
+                notify_paper(report)
+
     except Exception as e:
         logger.exception("エントリー判断エラー: %s", e)
     logger.info("======== エントリー判断完了 ========")
@@ -184,6 +194,17 @@ def run_monitor() -> None:
             logger.info("デスクロス銘柄なし")
     except Exception as e:
         logger.exception("ポジション監視エラー: %s", e)
+
+    # ペーパートレードの決済判定（保有があれば状況レポートも送る）
+    try:
+        from paper_trader import check_paper_exits, build_paper_report
+        from notifier import notify_paper
+        closed = check_paper_exits()
+        report = build_paper_report(closed=closed)
+        if report:
+            notify_paper(report)
+    except Exception as e:
+        logger.exception("ペーパートレード判定エラー: %s", e)
     logger.info("======== ポジション監視完了 ========")
 
 

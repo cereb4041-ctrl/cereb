@@ -326,6 +326,14 @@ def _send(message: str) -> None:
             logger.error("LINE送信例外: %s", e)
 
 
+def notify_paper(report: str) -> None:
+    """ペーパートレード状況レポートをLINEに送信。"""
+    print("\n" + "=" * 50)
+    print(report)
+    print("=" * 50 + "\n")
+    _send(report)
+
+
 def notify_treasure_chart(chart_results: list[dict]) -> None:
     """お宝×チャート診断結果をLINEに送信。"""
     today = _today_str()
