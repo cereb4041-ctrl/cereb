@@ -18,20 +18,21 @@ from .utils import logger, today_str
 
 
 def _universe_cache_path():
-    return config.CACHE_DIR / f"universe_{today_str()}.json"
+    # v2: 業種情報を含む形式（v1 のキャッシュとは互換性がないため名前を変える）
+    return config.CACHE_DIR / f"universe_v2_{today_str()}.json"
 
 
-def fetch_prime_tickers() -> tuple[list[str], dict[str, str]]:
+def fetch_prime_tickers() -> tuple[list[str], dict[str, str], dict[str, str]]:
     """
     JPX の上場銘柄一覧からプライム銘柄を抽出する。
-    Returns: (ティッカーリスト, {ticker: 銘柄名})
+    Returns: (ティッカーリスト, {ticker: 銘柄名}, {ticker: 業種名})
     """
     cache = _universe_cache_path()
     if config.CACHE_ENABLED and cache.exists():
         try:
             data = json.loads(cache.read_text(encoding="utf-8"))
             logger.info("銘柄一覧をキャッシュから読込: %d 銘柄", len(data["tickers"]))
-            return data["tickers"], data["names"]
+            return data["tickers"], data["names"], data["sectors"]
         except Exception as e:
             logger.debug("銘柄一覧キャッシュ読込失敗: %s", e)
 
@@ -53,19 +54,35 @@ def fetch_prime_tickers() -> tuple[list[str], dict[str, str]]:
 
     tickers = prime["ticker"].tolist()
     names   = dict(zip(prime["ticker"], prime["銘柄名"]))
-    logger.info("プライム銘柄数: %d", len(tickers))
+
+    # 業種区分（セクター分散フィルタで使用）。カラムが無い版でも動くようにする
+    if config.SECTOR_COLUMN in prime.columns:
+        sectors = {
+            t: (s if isinstance(s, str) and s.strip() not in ("", "-") else config.SECTOR_UNKNOWN)
+            for t, s in zip(prime["ticker"], prime[config.SECTOR_COLUMN])
+        }
+    else:
+        logger.warning(
+            "JPX Excel に '%s' カラムがないため業種を取得できません", config.SECTOR_COLUMN
+        )
+        sectors = {t: config.SECTOR_UNKNOWN for t in tickers}
+
+    logger.info("プライム銘柄数: %d（業種数 %d）", len(tickers), len(set(sectors.values())))
 
     if config.CACHE_ENABLED:
         try:
             config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
             cache.write_text(
-                json.dumps({"tickers": tickers, "names": names}, ensure_ascii=False),
+                json.dumps(
+                    {"tickers": tickers, "names": names, "sectors": sectors},
+                    ensure_ascii=False,
+                ),
                 encoding="utf-8",
             )
         except Exception as e:
             logger.debug("銘柄一覧キャッシュ保存失敗: %s", e)
 
-    return tickers, names
+    return tickers, names, sectors
 
 
 def filter_by_volume_and_price(tickers: list[str]) -> list[str]:
@@ -110,8 +127,12 @@ def filter_by_volume_and_price(tickers: list[str]) -> list[str]:
     return passed
 
 
-def get_universe() -> tuple[list[str], dict[str, str]]:
-    """スクリーニング対象のティッカーと銘柄名辞書を返す。"""
-    tickers, names = fetch_prime_tickers()
+def get_universe() -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """スクリーニング対象のティッカー・銘柄名辞書・業種辞書を返す。"""
+    tickers, names, sectors = fetch_prime_tickers()
     filtered = filter_by_volume_and_price(tickers)
-    return filtered, {t: names.get(t, t) for t in filtered}
+    return (
+        filtered,
+        {t: names.get(t, t) for t in filtered},
+        {t: sectors.get(t, config.SECTOR_UNKNOWN) for t in filtered},
+    )

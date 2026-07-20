@@ -62,7 +62,7 @@ def build_message(candidates: list) -> str:
             f"-{c.daily_pullback_pct}%" if c.daily_pullback_pct is not None else "-"
         )
         lines.append(
-            f"▶ {code} {c.name}\n"
+            f"▶ {code} {c.name}【{c.sector}】\n"
             f"  {c.price:,.0f}円 / 出来高 {c.volume:,.0f}\n"
             f"  週足PO：{_ok(c.weekly_po)}  20週線上向：{_ok(c.weekly_ma20_up)}\n"
             f"  20週線タッチ：{c.weekly_touch_count}回/{_ok(c.weekly_touch_ok)}\n"

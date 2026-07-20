@@ -37,6 +37,7 @@ from .utils import (
 class GreenCandidate:
     ticker: str
     name: str
+    sector: str
     price: float
     volume: float
     # 週足
@@ -125,7 +126,8 @@ def _analyze_daily(ticker: str) -> dict | None:
     }
 
 
-def analyze(ticker: str, name: str) -> GreenCandidate | None:
+def analyze(ticker: str, name: str,
+            sector: str = config.SECTOR_UNKNOWN) -> GreenCandidate | None:
     """1銘柄を8条件で評価する。データ不足なら None。"""
     weekly = _analyze_weekly(ticker)
     if weekly is None:
@@ -149,6 +151,7 @@ def analyze(ticker: str, name: str) -> GreenCandidate | None:
     return GreenCandidate(
         ticker=ticker,
         name=name,
+        sector=sector,
         price=daily["price"],
         volume=daily["volume"],
         weekly_po=weekly["weekly_po"],
@@ -166,12 +169,51 @@ def analyze(ticker: str, name: str) -> GreenCandidate | None:
     )
 
 
-def screen(tickers: list[str], names: dict[str, str]) -> list[GreenCandidate]:
+def diversify_by_sector(candidates: list[GreenCandidate],
+                        max_per_sector: int | None = None) -> list[GreenCandidate]:
+    """
+    同一業種の採用数に上限を設ける。
+
+    入力はスコア降順に並んでいる前提で、上から順に採用し、
+    その業種が上限に達していたら見送る（スコアの高い銘柄が優先される）。
+    """
+    limit = max_per_sector if max_per_sector is not None else config.MAX_PER_SECTOR
+
+    kept: list[GreenCandidate] = []
+    counts: dict[str, int] = {}
+    dropped: dict[str, int] = {}
+
+    for c in candidates:
+        sector = c.sector or config.SECTOR_UNKNOWN
+        if counts.get(sector, 0) < limit:
+            kept.append(c)
+            counts[sector] = counts.get(sector, 0) + 1
+        else:
+            dropped[sector] = dropped.get(sector, 0) + 1
+
+    logger.info(
+        "セクター分散フィルタ: %d → %d 銘柄（1業種あたり最大%d）",
+        len(candidates), len(kept), limit,
+    )
+    if dropped:
+        detail = "、".join(
+            f"{s} -{n}" for s, n in sorted(dropped.items(), key=lambda x: -x[1])
+        )
+        logger.info("  上限超過で除外: %s", detail)
+
+    return kept
+
+
+def screen(tickers: list[str], names: dict[str, str],
+           sectors: dict[str, str] | None = None) -> list[GreenCandidate]:
     """
     全銘柄をスクリーニングし、MIN_SCORE_TO_REPORT 以上の候補を
     スコア降順で返す（最大 MAX_RESULTS 件）。
+
+    SECTOR_DIVERSIFY が True の場合、件数を絞る前にセクター分散フィルタを適用する。
     """
     total = len(tickers)
+    sectors = sectors or {}
     candidates: list[GreenCandidate] = []
 
     for idx, ticker in enumerate(tickers, 1):
@@ -181,7 +223,11 @@ def screen(tickers: list[str], names: dict[str, str]) -> list[GreenCandidate]:
             gc.collect()   # メモリ対策
 
         try:
-            result = analyze(ticker, names.get(ticker, ticker))
+            result = analyze(
+                ticker,
+                names.get(ticker, ticker),
+                sectors.get(ticker, config.SECTOR_UNKNOWN),
+            )
         except Exception as e:
             logger.debug("判定エラー %s: %s", ticker, e)
             continue
@@ -192,12 +238,20 @@ def screen(tickers: list[str], names: dict[str, str]) -> list[GreenCandidate]:
         if result.score >= config.MIN_SCORE_TO_REPORT:
             candidates.append(result)
             logger.info(
-                "候補: %s %s  スコア %d/%d  %s",
-                ticker, result.name, result.score, config.SCORE_MAX, result.verdict,
+                "候補: %s %s [%s]  スコア %d/%d  %s",
+                ticker, result.name, result.sector,
+                result.score, config.SCORE_MAX, result.verdict,
             )
 
         time.sleep(config.FETCH_SLEEP)
 
     candidates.sort(key=lambda c: (c.score, c.volume), reverse=True)
     logger.info("スクリーニング完了: %d 銘柄 → %d 候補", total, len(candidates))
+
+    # 件数を絞る前に分散させる（絞ってから分散すると候補が枯れるため）
+    if config.SECTOR_DIVERSIFY:
+        candidates = diversify_by_sector(candidates)
+    else:
+        logger.info("セクター分散フィルタ: 無効（SECTOR_DIVERSIFY=False）")
+
     return candidates[: config.MAX_RESULTS]

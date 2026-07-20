@@ -57,7 +57,7 @@ def run_screening(limit: int | None, to_line: bool, save: bool) -> int:
     """ユニバースを取得してスクリーニングを実行する。"""
     logger.info("======== ぐりーん式スクリーニング開始 ========")
 
-    tickers, names = get_universe()
+    tickers, names, sectors = get_universe()
     if not tickers:
         logger.error("対象銘柄が0件です。ユニバース取得に失敗した可能性があります")
         return 1
@@ -66,7 +66,7 @@ def run_screening(limit: int | None, to_line: bool, save: bool) -> int:
         tickers = tickers[:limit]
         logger.info("--limit 指定により %d 銘柄に絞り込みました", len(tickers))
 
-    candidates = screen(tickers, names)
+    candidates = screen(tickers, names, sectors)
 
     if save and candidates:
         save_results([c.to_dict() for c in candidates])
