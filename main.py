@@ -32,6 +32,27 @@ logger = logging.getLogger(__name__)
 
 JST = pytz.timezone("Asia/Tokyo")
 
+try:
+    import jpholiday
+    _HAS_JPHOLIDAY = True
+except ImportError:      # 未導入でも年末年始は判定できるようにする
+    _HAS_JPHOLIDAY = False
+
+
+def _is_market_holiday(d) -> tuple[bool, str]:
+    """
+    平日の東証休場日（祝日・振替休日・年末年始）を判定する。
+    土日は呼び出し側の weekday 条件で既に除外される前提のため、ここでは扱わない。
+    Returns: (休場か, 理由)
+    """
+    if (d.month == 12 and d.day == 31) or (d.month == 1 and d.day <= 3):
+        return True, "年末年始休場"
+    if _HAS_JPHOLIDAY:
+        name = jpholiday.is_holiday_name(d)
+        if name:
+            return True, name
+    return False, ""
+
 # 週次スクリーニング: 土曜 08:00 JST
 _SCREEN_WEEKDAY = 5
 _SCREEN_HOUR    = 8
@@ -241,9 +262,22 @@ def _scheduler_loop() -> None:
                 last_screen_date = now.date()
                 run_screening()
 
+            # 平日の祝日（海の日など）は市場が休みのため、
+            # エントリー・監視・お宝はスキップする（土曜スクリーニングは対象外）。
+            weekday_holiday, holiday_reason = (
+                _is_market_holiday(now.date())
+                if now.weekday() in _ENTRY_WEEKDAY_RANGE
+                else (False, "")
+            )
+            if weekday_holiday and last_entry_date != now.date():
+                # 当日を「処理済み」にマークして各ジョブとログを1日1回に抑える
+                logger.info("本日は東証休場（%s）のため平日ジョブをスキップします", holiday_reason)
+                last_entry_date = last_monitor_date = last_treasure_date = now.date()
+
             # エントリー判断は寄り付き直後の情報が必要なので 9:15〜9:59 に限定
             # （それ以降に届いても行動できないため、遅すぎる場合はスキップ）
             if (now.weekday() in _ENTRY_WEEKDAY_RANGE
+                    and not weekday_holiday
                     and now.hour == _ENTRY_HOUR
                     and now.minute >= _ENTRY_MINUTE
                     and last_entry_date != now.date()):
@@ -252,12 +286,14 @@ def _scheduler_loop() -> None:
 
             # 監視・お宝は引け後データを使うため「指定時刻以降なら当日中いつでも」
             if (now.weekday() in _ENTRY_WEEKDAY_RANGE
+                    and not weekday_holiday
                     and (now.hour, now.minute) >= (_MONITOR_HOUR, _MONITOR_MINUTE)
                     and last_monitor_date != now.date()):
                 last_monitor_date = now.date()
                 run_monitor()
 
             if (now.weekday() in _ENTRY_WEEKDAY_RANGE
+                    and not weekday_holiday
                     and (now.hour, now.minute) >= (_TREASURE_HOUR, _TREASURE_MINUTE)
                     and last_treasure_date != now.date()):
                 last_treasure_date = now.date()
