@@ -6,6 +6,7 @@ green_screener エントリポイント。
     python green_screener/main.py --limit 50      先頭50銘柄だけ処理（動作確認用）
     python green_screener/main.py --ticker 7203   特定銘柄だけ判定
     python green_screener/main.py --clear-cache   キャッシュを削除してから実行
+    python green_screener/main.py --force          休場日でも実行する
 
 既存システム（プロジェクト直下の main.py）とは独立して動作する。
 """
@@ -26,7 +27,13 @@ from . import config
 from .notifier import notify
 from .screener import analyze, screen
 from .universe import get_universe
-from .utils import clear_cache, logger, save_results, setup_logging
+from .utils import (
+    clear_cache,
+    is_market_holiday,
+    logger,
+    save_results,
+    setup_logging,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -36,6 +43,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--ticker", type=str, default=None, help="特定銘柄のみ判定（例: 7203）")
     p.add_argument("--clear-cache", action="store_true", help="実行前にキャッシュを削除")
     p.add_argument("--no-save", action="store_true", help="results/ へ保存しない")
+    p.add_argument("--force", action="store_true", help="休場日でも実行する")
     return p.parse_args()
 
 
@@ -81,6 +89,17 @@ def main() -> int:
     args = _parse_args()
     load_dotenv()
     setup_logging()
+
+    # 休場日は実行しない（--force で無視できる）
+    holiday, reason = is_market_holiday()
+    if holiday and not args.force:
+        logger.info(
+            "本日は東証休場（%s）のためスクリーニングをスキップします"
+            "（強制実行は --force）", reason,
+        )
+        return 0
+    if holiday and args.force:
+        logger.info("休場（%s）ですが --force 指定のため実行します", reason)
 
     if args.clear_cache:
         n = clear_cache()

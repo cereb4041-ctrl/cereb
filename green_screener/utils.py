@@ -9,12 +9,18 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import pytz
 import yfinance as yf
+
+try:
+    import jpholiday
+    _HAS_JPHOLIDAY = True
+except ImportError:      # ライブラリ未導入でも土日判定だけは効かせる
+    _HAS_JPHOLIDAY = False
 
 from . import config
 
@@ -63,6 +69,44 @@ def now_jst() -> datetime:
 
 def today_str() -> str:
     return now_jst().strftime("%Y-%m-%d")
+
+
+# ─────────────────────────────────────────────
+# 営業日判定（東証の休場日）
+# ─────────────────────────────────────────────
+
+def is_market_holiday(d: date | None = None) -> tuple[bool, str]:
+    """
+    東証が休場かどうかを判定する。
+    Returns: (休場か, 理由)  営業日なら (False, "")。
+
+    休場条件:
+      - 土曜・日曜
+      - 日本の祝日（振替休日を含む。jpholiday 導入時のみ判定）
+      - 年末年始（12/31〜1/3）は祝日でなくても東証は休場
+    """
+    if d is None:
+        d = now_jst().date()
+
+    if d.weekday() >= 5:
+        return True, "土日"
+
+    # 年末年始の取引所休場（大納会・大発会の慣例）
+    if (d.month == 12 and d.day == 31) or (d.month == 1 and d.day <= 3):
+        return True, "年末年始休場"
+
+    if _HAS_JPHOLIDAY:
+        name = jpholiday.is_holiday_name(d)
+        if name:
+            return True, name
+
+    return False, ""
+
+
+def is_business_day(d: date | None = None) -> bool:
+    """東証の営業日なら True。"""
+    holiday, _ = is_market_holiday(d)
+    return not holiday
 
 
 # ─────────────────────────────────────────────
