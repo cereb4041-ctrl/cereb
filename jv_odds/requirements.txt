@@ -1,0 +1,8 @@
+# JV-Link 時系列オッズ収集システム 依存ライブラリ
+#
+# 標準ライブラリのみで動作する部分: sqlite3 / logging / configparser / argparse
+# 外部ライブラリは COM 呼び出し用の pywin32 のみ（Windows 専用）。
+#
+# 注意: JV-Link (JVDTLab.JVLink) は 32bit の COM コンポーネントのため、
+#       Python も 32bit 版 (Windows x86) を使用してください。
+pywin32>=306; sys_platform == "win32"

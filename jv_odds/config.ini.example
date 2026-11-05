@@ -1,0 +1,46 @@
+; JV-Link 時系列オッズ収集システム 設定ファイル
+; config.ini という名前でコピーして使用してください（未作成時は既定値で動作）。
+
+[jvlink]
+; JVInit に渡すソフトウェアID（個人利用は UNKNOWN で可）
+sid = UNKNOWN
+; COM の ProgID
+progid = JVDTLab.JVLink
+; JVGets/JVRead のバッファサイズ（今週データに含まれる H6 102,890byte より大きくする）
+read_buffer = 200000
+; レコード読み出し方式: gets = JVGets (Shift-JIS の bytes をそのまま受け取る。推奨)
+;                       read = JVRead (Unicode 文字列。バイト位置がずれる恐れがあるため非推奨)
+read_method = gets
+; JVOpen(今週データ) のダウンロード待ちタイムアウト（秒）
+download_timeout = 300
+
+[collector]
+; 取得間隔（分）。壁時計の 00/10/20… 分に揃えて実行する
+interval_minutes = 10
+; 当日の収集開始時刻（これより前は待機）
+start_time = 08:30
+; 発走時刻の何分前まで取得するか（0 = 発走時刻まで。締切は通常発走2分前）
+stop_before_post_minutes = 0
+; 10分間隔とは別に「発走 N 分前」に締切直前の最終取得を行う（0 = 無効）
+final_fetch_minutes_before = 3
+; 発走時刻が取れなかったレースの取得打ち切り時刻
+fallback_end_time = 17:00
+; JV-Link 呼び出し失敗時の再試行（エクスポネンシャルバックオフ）
+;   待ち = min(retry_wait_seconds × 2^(n-1), retry_max_wait_seconds) ± jitter
+;   既定: 2 → 4 → 8 → 16 秒、初回を含め最大 5 回。-504 (メンテナンス) は上限まで待つ
+;   失敗のたびに JVClose → COM 解放 → 次回 JVInit から再初期化する
+retry_count = 4
+retry_wait_seconds = 2
+retry_max_wait_seconds = 30
+retry_jitter = 0.2
+; （互換用。現在は失敗のたびに必ずリセットする）
+reinit_after_errors = 1
+; JV-Link 呼び出しの詳細ログ (logs/jv_odds_debug.log) を出すか
+debug_log = true
+; 発走時刻変更などを反映するためのレース情報再取得間隔（分）
+race_refresh_minutes = 60
+
+[paths]
+; 相対パスは jv_odds フォルダ基準
+db_path = data/jv_odds.db
+log_dir = logs
