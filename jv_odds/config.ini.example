@@ -1,0 +1,36 @@
+; JV-Link 時系列オッズ収集システム 設定ファイル
+; config.ini という名前でコピーして使用してください（未作成時は既定値で動作）。
+
+[jvlink]
+; JVInit に渡すソフトウェアID（個人利用は UNKNOWN で可）
+sid = UNKNOWN
+; COM の ProgID
+progid = JVDTLab.JVLink
+; JVRead のバッファサイズ
+read_buffer = 110000
+; JVOpen(今週データ) のダウンロード待ちタイムアウト（秒）
+download_timeout = 300
+
+[collector]
+; 取得間隔（分）。壁時計の 00/10/20… 分に揃えて実行する
+interval_minutes = 10
+; 当日の収集開始時刻（これより前は待機）
+start_time = 08:30
+; 発走時刻の何分前まで取得するか（0 = 発走時刻まで。締切は通常発走2分前）
+stop_before_post_minutes = 0
+; 10分間隔とは別に「発走 N 分前」に締切直前の最終取得を行う（0 = 無効）
+final_fetch_minutes_before = 3
+; 発走時刻が取れなかったレースの取得打ち切り時刻
+fallback_end_time = 17:00
+; 1 回の取得で失敗した時のその場リトライ回数と待ち秒数
+retry_count = 2
+retry_wait_seconds = 15
+; 連続エラー回数がこの値に達したら JV-Link を再初期化する
+reinit_after_errors = 1
+; 発走時刻変更などを反映するためのレース情報再取得間隔（分）
+race_refresh_minutes = 60
+
+[paths]
+; 相対パスは jv_odds フォルダ基準
+db_path = data/jv_odds.db
+log_dir = logs
