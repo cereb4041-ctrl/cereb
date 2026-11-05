@@ -25,11 +25,18 @@ stop_before_post_minutes = 0
 final_fetch_minutes_before = 3
 ; 発走時刻が取れなかったレースの取得打ち切り時刻
 fallback_end_time = 17:00
-; 1 回の取得で失敗した時のその場リトライ回数と待ち秒数
-retry_count = 2
-retry_wait_seconds = 15
-; 連続エラー回数がこの値に達したら JV-Link を再初期化する
+; JV-Link 呼び出し失敗時の再試行（エクスポネンシャルバックオフ）
+;   待ち = min(retry_wait_seconds × 2^(n-1), retry_max_wait_seconds) ± jitter
+;   既定: 2 → 4 → 8 → 16 秒、初回を含め最大 5 回。-504 (メンテナンス) は上限まで待つ
+;   失敗のたびに JVClose → COM 解放 → 次回 JVInit から再初期化する
+retry_count = 4
+retry_wait_seconds = 2
+retry_max_wait_seconds = 30
+retry_jitter = 0.2
+; （互換用。現在は失敗のたびに必ずリセットする）
 reinit_after_errors = 1
+; JV-Link 呼び出しの詳細ログ (logs/jv_odds_debug.log) を出すか
+debug_log = true
 ; 発走時刻変更などを反映するためのレース情報再取得間隔（分）
 race_refresh_minutes = 60
 

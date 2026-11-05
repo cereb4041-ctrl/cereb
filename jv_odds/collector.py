@@ -20,8 +20,9 @@ from datetime import time as dtime
 from typing import Optional
 
 from . import db
-from .config import Settings
-from .jvlink import JVLinkError, JVLinkUnavailable
+from .config import Settings, retry_policy
+from .jvlink import JVLinkError, JVLinkUnavailable, describe_exception
+from .retry import RetryPolicy, call_with_retry
 from .records import PARSERS, RaceInfo, RecordLengthError, parse_ra, record_spec
 
 # JRA の競馬場コード 01=札幌 02=函館 03=福島 04=新潟 05=東京 06=中山 07=中京 08=京都 09=阪神 10=小倉
@@ -66,37 +67,37 @@ class OddsCollector:
         self.client = client
         self.conn = conn
         self.st = settings
+        self.policy = retry_policy(settings)
+        self.sleep = time.sleep
         self.consecutive_errors = 0
+        self.degraded = False  # サイクル内で JV-Link が不調と判断した状態
 
     # ---- JV-Link 呼び出しの共通リトライ --------------------------------
     def _call(self, desc: str, func, *args, **kwargs):
         """
-        JV-Link 呼び出しを retry_count 回までその場で再試行する。
-        再試行の前に JV-Link をリセットして再初期化（切断・状態不整合への対処）。
+        JV-Link 呼び出しをエクスポネンシャルバックオフで再試行する（retry.call_with_retry）。
+        失敗のたびに client.reset()（JVClose → COM 解放 → 次回 JVInit）で状態を完全にクリアする。
+        同じサイクル内で再試行を使い切ったレースがあれば、以降は 1 回だけ試す（サーキットブレーカ）。
         最終的に失敗した場合は例外を送出する（呼び出し側で記録して次回へ回す）。
         """
-        attempts = self.st.retry_count + 1
-        for i in range(1, attempts + 1):
-            try:
-                result = func(*args, **kwargs)
-                self.consecutive_errors = 0
-                return result
-            except JVLinkError as e:
-                if not e.retryable:
-                    log.error("%s: 再試行不可のエラー: %s", desc, e)
-                    raise
-                err = e
-            except JVLinkUnavailable:
-                raise
-            except Exception as e:  # pywintypes.com_error（RPC 切断など）を含む
-                err = e
+        policy = self.policy
+        if self.degraded:
+            policy = RetryPolicy(1, policy.base_wait, policy.max_wait, policy.jitter)
+        try:
+            result = call_with_retry(desc, lambda: func(*args, **kwargs), policy,
+                                     reset=self.client.reset, sleep=self.sleep)
+        except Exception as e:
+            retryable = not isinstance(e, JVLinkError) or e.retryable
+            if retryable and not isinstance(e, JVLinkUnavailable) and not self.degraded:
+                self.degraded = True
+                log.warning("再試行を使い切ったため、このサイクルの残りは 1 回ずつの試行にします")
             self.consecutive_errors += 1
-            log.warning("%s: 失敗 (%d/%d): %s", desc, i, attempts, err)
-            if self.consecutive_errors >= self.st.reinit_after_errors:
-                self.client.reset()
-            if i < attempts:
-                time.sleep(self.st.retry_wait_seconds)
-        raise err  # type: ignore[misc]
+            raise
+        self.consecutive_errors = 0
+        if self.degraded:
+            log.info("JV-Link が回復しました（通常の再試行に戻します）")
+            self.degraded = False
+        return result
 
     # ---- レース一覧 ---------------------------------------------------
     def refresh_races(self, target_dates: Optional[list[date]] = None) -> int:
@@ -188,6 +189,7 @@ class OddsCollector:
         """
         now = now or datetime.now()
         res = CycleResult()
+        self.degraded = False  # サイクルごとに通常の再試行から始める
         try:
             races = db.races_on(self.conn, now.date().isoformat())
             if not races:
@@ -226,8 +228,9 @@ class OddsCollector:
                               "JV-Link を利用できません")
                 raise
             except Exception as e:
-                log.error("レース %s のオッズ取得に失敗（次回再試行）: %s", rid, e)
-                res.errors.append(f"{rid}: {e}")
+                detail = describe_exception(e)
+                log.error("レース %s のオッズ取得に失敗（次回再試行）: %s", rid, detail)
+                res.errors.append(f"{rid}: {detail}")
 
         if res.errors:
             res.status = "PARTIAL" if res.races_ok else "ERROR"

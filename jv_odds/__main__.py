@@ -21,7 +21,7 @@ from datetime import date, datetime
 from . import db
 from .collector import OddsCollector
 from .envcheck import run_env_check
-from .config import load_settings
+from .config import load_settings, retry_policy
 from .jvlink import JVLinkClient, JVLinkError, JVLinkUnavailable
 from .logging_setup import setup_logging
 from .scheduler import run_day
@@ -52,9 +52,9 @@ def cmd_check_env(args, st) -> int:
         from .mock_jvlink import FakeJVLinkCOM, MockJVLinkClient
         mock = MockJVLinkClient()
         report = run_env_check(st.progid, st.sid, race_key, com_factory=FakeJVLinkCOM,
-                               fetch=mock.rt_records)
+                               fetch=mock.rt_records, policy=retry_policy(st))
     else:
-        report = run_env_check(st.progid, st.sid, race_key)
+        report = run_env_check(st.progid, st.sid, race_key, policy=retry_policy(st))
     print(report.render())
     print(f"DB  : {st.db_path}")
     print(f"ログ: {st.log_dir}")
@@ -173,7 +173,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     st = load_settings(args.config)
-    setup_logging(st.log_dir, args.verbose)
+    setup_logging(st.log_dir, args.verbose, st.debug_log)
     handlers = {
         "check-env": cmd_check_env, "init-db": cmd_init_db, "races": cmd_races,
         "collect": cmd_collect, "run": cmd_run, "backfill": cmd_backfill, "status": cmd_status,

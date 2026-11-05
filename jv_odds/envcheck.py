@@ -20,10 +20,11 @@ from __future__ import annotations
 import platform
 import struct
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .jvlink import ERROR_MESSAGES, JVLinkError, validate_rt_key
+from .jvlink import ERROR_MESSAGES, JVLinkError, describe_exception, validate_rt_key
 
 OK, WARN, NG = "OK", "WARN", "NG"
 
@@ -156,15 +157,26 @@ def probe_jvrtopen(report: Report, com) -> None:
                f"戻り値 {codes}" + ("  ※JVClose が効いていません" if -202 in codes else ""))
 
 
-def probe_race(report: Report, fetch: Callable[[str, str], list], race_key: str) -> None:
-    """実レースの 0B31/0B32 を取得し、レコード長・レースキー・オッズ件数を検査する。"""
+def probe_race(report: Report, fetch: Callable[[str, str], list], race_key: str,
+               policy=None, reset: Optional[Callable[[], None]] = None,
+               sleep: Callable[[float], None] = time.sleep) -> None:
+    """
+    実レースの 0B31/0B32 を取得し、レコード長・レースキー・オッズ件数を検査する。
+    取得は本番と同じバックオフ付き再試行で行い、各試行の段階・エラーコードを表示する。
+    """
     from .records import RECORD_LENGTH, RecordLengthError, parse_o1, parse_o2, record_spec
+    from .retry import RetryPolicy, call_with_retry
+    policy = policy or RetryPolicy()
     for spec, rtype, parser in (("0B31", "O1", parse_o1), ("0B32", "O2", parse_o2)):
+        history: list = []
         try:
-            recs = fetch(spec, race_key)
-        except JVLinkError as e:
-            report.add(f"実取得 {spec}", WARN if e.no_data else NG, str(e))
+            recs = call_with_retry(f"check-env {spec}", lambda: fetch(spec, race_key), policy,
+                                   reset=reset, sleep=sleep, history=history)
+        except Exception as e:
+            report.add(f"実取得 {spec}", NG, describe_exception(e))
+            _add_attempts(report, spec, history)
             continue
+        _add_attempts(report, spec, history)
         if not recs:
             report.add(f"実取得 {spec}", WARN, f"{race_key}: 該当データなし（発売前・提供期間外の可能性）")
             continue
@@ -184,9 +196,20 @@ def probe_race(report: Report, fetch: Callable[[str, str], list], race_key: str)
                    + ("" if keys_ok else "  ※レースキー不一致"))
 
 
+def _add_attempts(report: Report, spec: str, history: list) -> None:
+    """再試行が発生した場合のみ、各試行の結果を WARN として残す。"""
+    if len(history) <= 1:
+        return
+    for h in history:
+        if not h.ok:
+            report.add(f"  {spec} 試行 {h.attempt}", WARN,
+                       h.detail + (f" → {h.wait:.1f}s 待機" if h.wait else ""))
+
+
 def run_env_check(progid: str, sid: str, race_key: Optional[str] = None,
                   com_factory: Optional[Callable[[], object]] = None,
-                  fetch: Optional[Callable[[str, str], list]] = None) -> Report:
+                  fetch: Optional[Callable[[str, str], list]] = None,
+                  policy=None, sleep: Callable[[float], None] = time.sleep) -> Report:
     report = Report()
     if com_factory is None:
         if not check_python(report):
@@ -205,7 +228,7 @@ def run_env_check(progid: str, sid: str, race_key: Optional[str] = None,
     try:
         code = int(com.JVInit(sid))
     except Exception as e:
-        report.add("JVInit", NG, f"例外: {e}")
+        report.add("JVInit", NG, f"例外: {describe_exception(e)}")
         return report
     if code != 0:
         report.add("JVInit", NG, _desc(code))
@@ -215,7 +238,11 @@ def run_env_check(progid: str, sid: str, race_key: Optional[str] = None,
     try:
         probe_jvrtopen(report, com)
     except Exception as e:  # COM 切断など
-        report.add("JVRTOpen プローブ", NG, f"例外: {e}")
+        report.add("JVRTOpen プローブ", NG, f"例外: {describe_exception(e)}")
+        try:
+            com.JVClose()
+        except Exception:
+            pass
 
     if race_key:
         try:
@@ -223,10 +250,11 @@ def run_env_check(progid: str, sid: str, race_key: Optional[str] = None,
         except JVLinkError as e:
             report.add("--race-key", NG, str(e))
         else:
+            reset = None
             if fetch is None:
                 from .jvlink import JVLinkClient
                 client = JVLinkClient(sid, progid)
                 client._jv = com  # 生成済みの COM を流用（JVInit 済み）
-                fetch = client.rt_records
-            probe_race(report, fetch, race_key)
+                fetch, reset = client.rt_records, client.reset
+            probe_race(report, fetch, race_key, policy, reset, sleep)
     return report

@@ -74,9 +74,21 @@ DEFAULT_BUFFER = 200_000
 
 
 class JVLinkError(Exception):
-    def __init__(self, func: str, code: int, detail: str = ""):
+    """
+    JV-Link の負の戻り値。どの段階 (stage) で返ったかを保持してログに出す。
+      stage: JVInit / JVOpen / JVRTOpen / JVStatus / JVGets / JVRead / validate
+    """
+
+    def __init__(self, func: str, code: int, detail: str = "", *, stage: str = "",
+                 dataspec: str = "", key: str = "", filename: str = "", records_read: int = 0):
         self.func = func
         self.code = code
+        self.detail = detail
+        self.stage = stage or func.split("(")[0]
+        self.dataspec = dataspec
+        self.key = key
+        self.filename = filename
+        self.records_read = records_read
         msg = ERROR_MESSAGES.get(code, "不明なエラー")
         super().__init__(f"{func} failed: code={code} ({msg}){' ' + detail if detail else ''}")
 
@@ -87,6 +99,35 @@ class JVLinkError(Exception):
     @property
     def no_data(self) -> bool:
         return self.code == -1
+
+    def detail_text(self) -> str:
+        """ログ用の詳細: 段階・コード・dataspec/key・読込済み件数・ファイル名。"""
+        parts = [f"stage={self.stage}", f"code={self.code}({ERROR_MESSAGES.get(self.code, '不明')})"]
+        if self.dataspec:
+            parts.append(f"dataspec={self.dataspec}")
+        if self.key:
+            parts.append(f"key={self.key}")
+        if self.stage in ("JVGets", "JVRead"):
+            parts.append(f"records_read={self.records_read}")
+        if self.filename:
+            parts.append(f"file={self.filename}")
+        if self.detail:
+            parts.append(self.detail)
+        return " ".join(parts)
+
+
+def describe_exception(e: BaseException) -> str:
+    """pywintypes.com_error などを HRESULT 付きで文字列化する。"""
+    if isinstance(e, JVLinkError):
+        return e.detail_text()
+    args = getattr(e, "args", ())
+    if type(e).__name__ == "com_error" and args:
+        hr = args[0]
+        hr_s = f"0x{hr & 0xFFFFFFFF:08X}" if isinstance(hr, int) else str(hr)
+        msg = args[1] if len(args) > 1 else ""
+        exc = args[2] if len(args) > 2 else None
+        return f"com_error hresult={hr_s} {msg} excepinfo={exc}"
+    return f"{type(e).__name__}: {e}"
 
 
 class JVLinkUnavailable(Exception):
@@ -133,7 +174,8 @@ def validate_rt_key(dataspec: str, key: str) -> None:
     不正なら JV-Link と同じコード (-111 / -114) の JVLinkError を送出する（再試行しない）。
     """
     if dataspec not in RT_DATASPECS:
-        raise JVLinkError(f"JVRTOpen({dataspec},{key})", -111, "未対応の dataspec")
+        raise JVLinkError(f"JVRTOpen({dataspec},{key})", -111, "未対応の dataspec",
+                          stage="validate", dataspec=dataspec, key=key)
     unit = RT_DATASPECS[dataspec][1]
     is_race = bool(RACE_KEY_RE.match(key))
     is_day = bool(DAY_KEY_RE.match(key))
@@ -146,7 +188,8 @@ def validate_rt_key(dataspec: str, key: str) -> None:
         expect = {"race": "YYYYMMDDJJKKHHRR (16桁) / YYYYMMDDJJRR (12桁)",
                   "day": "YYYYMMDD (8桁)",
                   "day_or_race": "YYYYMMDD / YYYYMMDDJJKKHHRR"}[unit]
-        raise JVLinkError(f"JVRTOpen({dataspec},{key})", -114, f"キー形式は {expect}")
+        raise JVLinkError(f"JVRTOpen({dataspec},{key})", -114, f"キー形式は {expect}",
+                          stage="validate", dataspec=dataspec, key=key)
 
 
 def _pump():
@@ -188,38 +231,71 @@ class JVLinkClient:
         self.read_method = read_method  # "gets" (推奨) / "read"
         self._jv = None
         self._opened = False
+        self._downloading = False  # JVOpen でダウンロード中（JVCancel が必要）
+        self._com_initialized = False
 
     # ---- 接続管理 -------------------------------------------------------
     def connect(self) -> None:
         if self._jv is not None:
             return
+        t0 = time.monotonic()
         com = create_com(self.progid)
-        ret = int(com.JVInit(self.sid))
+        self._com_initialized = True
+        try:
+            ret = int(com.JVInit(self.sid))
+        except Exception as e:
+            log.error("JVInit で例外: %s", describe_exception(e))
+            self._jv = com
+            self.reset()
+            raise
+        log.debug("JVInit(sid=%s) -> %d (%.0fms)", self.sid, ret, (time.monotonic() - t0) * 1000)
         if ret != 0:
-            raise JVLinkError("JVInit", ret)
+            self._jv = com
+            self.reset()
+            raise JVLinkError("JVInit", ret, stage="JVInit")
         self._jv = com
         log.info("JV-Link 初期化完了 (sid=%s)", self.sid)
 
     def close(self) -> None:
-        if self._jv is not None and self._opened:
+        """Open 中なら JVClose（ダウンロード中なら先に JVCancel）。例外は握りつぶしてログのみ。"""
+        if self._jv is None:
+            self._opened = self._downloading = False
+            return
+        if self._downloading:
             try:
-                self._jv.JVClose()
+                self._jv.JVCancel()
+                log.debug("JVCancel 実行")
+            except Exception as e:
+                log.debug("JVCancel で例外 (無視): %s", describe_exception(e))
+        if self._opened:
+            try:
+                ret = self._jv.JVClose()
+                log.debug("JVClose -> %s", ret)
             except Exception as e:  # 切断済みなどは無視
-                log.debug("JVClose で例外 (無視): %s", e)
-        self._opened = False
+                log.warning("JVClose で例外 (無視): %s", describe_exception(e))
+        self._opened = self._downloading = False
 
     def reset(self) -> None:
-        """切断・異常時に COM オブジェクトを破棄し、次回 connect で作り直す。"""
+        """
+        異常時の完全なクリーンアップ:
+          JVCancel/JVClose → COM オブジェクト解放 → CoUninitialize。
+        次回の connect() で CoInitialize → Dispatch → JVInit からやり直す。
+        """
         had = self._jv is not None
         self.close()
         self._jv = None
         if had:
+            import gc
+            gc.collect()  # COM 参照を確実に解放してから CoUninitialize する
+        if self._com_initialized:
             try:
                 import pythoncom  # type: ignore
                 pythoncom.CoUninitialize()
             except Exception:
                 pass
-            log.info("JV-Link をリセットしました（次回再初期化）")
+            self._com_initialized = False
+        if had:
+            log.info("JV-Link をリセットしました（JVClose・COM 解放済み。次回 JVInit から再初期化）")
 
     # ---- 読み出し -------------------------------------------------------
     def _read_one(self) -> tuple[int, bytes, str]:
@@ -236,39 +312,73 @@ class JVLinkClient:
         data = res[1].encode("cp932", errors="replace") if code > 0 and res[1] else b""
         return code, data, str(res[3] if len(res) > 3 else "")
 
-    def _read_all(self, func: str) -> Iterator[bytes]:
+    def _read_all(self, func: str, dataspec: str = "", key: str = "") -> Iterator[bytes]:
+        stage = "JVGets" if self.read_method == "gets" else "JVRead"
+        count = 0
+        waits = 0
+        deadline: Optional[float] = None
+        t0 = time.monotonic()
         while True:
-            code, data, filename = self._read_one()
+            try:
+                code, data, filename = self._read_one()
+            except Exception as e:
+                log.error("%s ループ内で例外 (%s, 読込済み %d 件): %s",
+                          stage, func, count, describe_exception(e))
+                raise
             if code > 0:
+                count += 1
+                deadline = None
                 yield data
             elif code == GETS_EOF:
+                log.debug("%s(%s) EOF: %d 件 (%.0fms, ダウンロード待ち %d 回)",
+                          stage, func, count, (time.monotonic() - t0) * 1000, waits)
                 return
             elif code == GETS_FILE_SWITCH:
+                log.debug("%s(%s) ファイル切替: %s", stage, func, filename)
                 continue
             elif code == GETS_DOWNLOADING:
+                # -3: 読み出すファイルがまだダウンロード中。無限待ちを防ぐためタイムアウトを設ける
+                waits += 1
+                if deadline is None:
+                    deadline = time.monotonic() + self.download_timeout
+                elif time.monotonic() > deadline:
+                    raise JVLinkError(f"{stage}({func})", -502, "ダウンロード待ちタイムアウト (-3 継続)",
+                                      stage=stage, dataspec=dataspec, key=key, records_read=count)
+                if waits == 1 or waits % 20 == 0:
+                    log.debug("%s(%s) ダウンロード中 (-3) 待機 %d 回目", stage, func, waits)
                 _pump()
                 time.sleep(0.5)
-            elif code in BROKEN_FILE_CODES:
-                # 壊れたファイルを削除しておけば、次回の取得で再ダウンロードされる
-                if filename:
+            else:
+                err = JVLinkError(f"{stage}({func})", code, stage=stage, dataspec=dataspec,
+                                  key=key, filename=filename, records_read=count)
+                log.error("%s ループ内でエラー: %s", stage, err.detail_text())
+                if code in BROKEN_FILE_CODES and filename:
+                    # 壊れたファイルを削除しておけば、次回の取得で再ダウンロードされる
                     try:
                         self._jv.JVFiledelete(filename)
                         log.warning("破損ファイルを削除しました: %s", filename)
                     except Exception as e:
-                        log.warning("JVFiledelete 失敗 %s: %s", filename, e)
-                raise JVLinkError(f"JVGets({func})", code, filename)
-            else:
-                raise JVLinkError(f"JVGets({func})", code)
+                        log.warning("JVFiledelete 失敗 %s: %s", filename, describe_exception(e))
+                raise err
+
+    def _rt_open(self, dataspec: str, key: str) -> int:
+        t0 = time.monotonic()
+        try:
+            ret = int(self._jv.JVRTOpen(dataspec, key))
+        except Exception as e:
+            log.error("JVRTOpen(%s,%s) で例外: %s", dataspec, key, describe_exception(e))
+            raise
+        finally:
+            self._opened = True  # -1 や例外でも JVClose を呼ぶ
+        log.debug("JVRTOpen(%s,%s) -> %d (%.0fms)", dataspec, key, ret, (time.monotonic() - t0) * 1000)
+        return ret
 
     def rt_open_code(self, dataspec: str, key: str) -> int:
-        """
-        JVRTOpen を呼んで戻り値をそのまま返し、必ず JVClose する（環境チェック用）。
-        """
+        """JVRTOpen を呼んで戻り値をそのまま返し、必ず JVClose する（環境チェック用）。"""
         self.connect()
         try:
-            return int(self._jv.JVRTOpen(dataspec, key))
+            return self._rt_open(dataspec, key)
         finally:
-            self._opened = True
             self.close()
 
     def rt_records(self, dataspec: str, key: str) -> list[bytes]:
@@ -276,14 +386,16 @@ class JVLinkClient:
         validate_rt_key(dataspec, key)
         self.connect()
         assert self._jv is not None
+        func = f"{dataspec},{key}"
         try:
-            ret = int(self._jv.JVRTOpen(dataspec, key))
-            self._opened = True  # -1 でも JVClose が必要
+            ret = self._rt_open(dataspec, key)
             if ret == -1:
                 return []
             if ret < 0:
-                raise JVLinkError(f"JVRTOpen({dataspec},{key})", ret)
-            return list(self._read_all(f"{dataspec},{key}"))
+                err = JVLinkError(f"JVRTOpen({func})", ret, stage="JVRTOpen", dataspec=dataspec, key=key)
+                log.error("JVRTOpen でエラー: %s", err.detail_text())
+                raise err
+            return list(self._read_all(func, dataspec, key))
         finally:
             self.close()
 
@@ -293,35 +405,48 @@ class JVLinkClient:
         self.connect()
         assert self._jv is not None
         wanted = {s.encode("ascii") for s in record_filter} if record_filter else None
+        func = f"{dataspec},{fromtime},{option}"
         try:
-            res = self._jv.JVOpen(dataspec, fromtime, int(option), 0, 0, "")
+            t0 = time.monotonic()
+            try:
+                res = self._jv.JVOpen(dataspec, fromtime, int(option), 0, 0, "")
+            finally:
+                self._opened = True  # -1 や例外でも JVClose が必要
             ret = int(res[0]) if isinstance(res, (tuple, list)) else int(res)
-            self._opened = True  # -1 でも JVClose が必要
+            log.debug("JVOpen(%s) -> %s (%.0fms)", func, res, (time.monotonic() - t0) * 1000)
             if ret == -1:
                 return []
             if ret < 0:
-                raise JVLinkError(f"JVOpen({dataspec},{fromtime},{option})", ret)
+                err = JVLinkError(f"JVOpen({func})", ret, stage="JVOpen", dataspec=dataspec, key=fromtime)
+                log.error("JVOpen でエラー: %s", err.detail_text())
+                raise err
             download_count = int(res[2] or 0) if isinstance(res, (tuple, list)) and len(res) > 2 else 0
-            self._wait_download(download_count)
-            return [rec for rec in self._read_all(dataspec) if wanted is None or rec[:2] in wanted]
+            self._wait_download(download_count, dataspec)
+            return [rec for rec in self._read_all(func, dataspec, fromtime)
+                    if wanted is None or rec[:2] in wanted]
         finally:
             self.close()
 
-    def _wait_download(self, download_count: int) -> None:
+    def _wait_download(self, download_count: int, dataspec: str = "") -> None:
         if download_count <= 0:
             return
+        self._downloading = True
         deadline = time.monotonic() + self.download_timeout
+        last = -1
         while True:
             st = int(self._jv.JVStatus())
             if st < 0:
-                raise JVLinkError("JVStatus", st)
+                err = JVLinkError("JVStatus", st, stage="JVStatus", dataspec=dataspec)
+                log.error("JVStatus でエラー: %s", err.detail_text())
+                raise err
+            if st != last:
+                log.debug("JVStatus ダウンロード %d/%d", st, download_count)
+                last = st
             if st >= download_count:
+                self._downloading = False
                 return
             if time.monotonic() > deadline:
-                try:
-                    self._jv.JVCancel()
-                except Exception:
-                    pass
-                raise JVLinkError("JVStatus", -502, "ダウンロード待ちタイムアウト")
+                raise JVLinkError("JVStatus", -502, f"ダウンロード待ちタイムアウト ({st}/{download_count})",
+                                  stage="JVStatus", dataspec=dataspec)
             _pump()
             time.sleep(0.5)

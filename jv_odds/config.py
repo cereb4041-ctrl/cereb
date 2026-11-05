@@ -22,11 +22,15 @@ class Settings:
     start_time: time = time(8, 30)
     stop_before_post_minutes: int = 0
     fallback_end_time: time = time(17, 0)
-    retry_count: int = 2
-    retry_wait_seconds: int = 15
+    retry_count: int = 4                 # 再試行回数（初回を含め最大 retry_count+1 回）
+    retry_wait_seconds: float = 2.0      # バックオフの初期待ち（2→4→8→16 秒）
+    retry_max_wait_seconds: float = 30.0 # 1 回の待ちの上限
+    retry_jitter: float = 0.2            # 待ち時間の揺らぎ (±20%)
     reinit_after_errors: int = 1
     race_refresh_minutes: int = 60
     final_fetch_minutes_before: int = 3
+
+    debug_log: bool = True               # logs/jv_odds_debug.log に JV-Link 呼び出しの詳細を出す
 
     db_path: Path = BASE_DIR / "data" / "jv_odds.db"
     log_dir: Path = BASE_DIR / "logs"
@@ -65,11 +69,15 @@ def load_settings(path: Path | str | None = None) -> Settings:
     if "fallback_end_time" in c:
         st.fallback_end_time = _time(c["fallback_end_time"])
     st.retry_count = int(c.get("retry_count", st.retry_count))
-    st.retry_wait_seconds = int(c.get("retry_wait_seconds", st.retry_wait_seconds))
+    st.retry_wait_seconds = float(c.get("retry_wait_seconds", st.retry_wait_seconds))
+    st.retry_max_wait_seconds = float(c.get("retry_max_wait_seconds", st.retry_max_wait_seconds))
+    st.retry_jitter = float(c.get("retry_jitter", st.retry_jitter))
     st.reinit_after_errors = int(c.get("reinit_after_errors", st.reinit_after_errors))
     st.race_refresh_minutes = int(c.get("race_refresh_minutes", st.race_refresh_minutes))
     st.final_fetch_minutes_before = int(c.get("final_fetch_minutes_before",
                                               st.final_fetch_minutes_before))
+
+    st.debug_log = c.get("debug_log", "true").strip().lower() in ("1", "true", "yes", "on")
 
     p = cp["paths"] if cp.has_section("paths") else {}
     if "db_path" in p:
@@ -77,3 +85,9 @@ def load_settings(path: Path | str | None = None) -> Settings:
     if "log_dir" in p:
         st.log_dir = _path(p["log_dir"])
     return st
+
+
+def retry_policy(st: Settings):
+    from .retry import RetryPolicy
+    return RetryPolicy(max_attempts=st.retry_count + 1, base_wait=st.retry_wait_seconds,
+                       max_wait=st.retry_max_wait_seconds, jitter=st.retry_jitter)
