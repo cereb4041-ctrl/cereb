@@ -41,6 +41,8 @@ CREATE INDEX IF NOT EXISTS idx_races_date ON races (race_date, post_time);
 -- 受信レコード（スナップショット）ヘッダ
 --   record_type : 'O1' = 単勝・複勝・枠連, 'O2' = 馬連
 --   happyo_at   : JV-Data の「発表月日時分」から復元した発表日時
+--                 （仕様上、発表月日時分は中間オッズ(データ区分1)のみ設定。未設定の最終・確定
+--                   オッズは取得時刻を入れ happyo_estimated = 1 とする）
 --   data_kubun  : 1=中間 2=前日売最終 3=最終 4=確定 5=確定(月曜) 9=レース中止 0=削除
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS odds_snapshots (
@@ -50,6 +52,7 @@ CREATE TABLE IF NOT EXISTS odds_snapshots (
     data_spec      TEXT NOT NULL,              -- 0B31 / 0B32 / 0B41 / 0B42 など
     data_kubun     TEXT,
     happyo_at      TEXT NOT NULL,              -- 発表日時
+    happyo_estimated INTEGER NOT NULL DEFAULT 0, -- 1 = 発表時刻が未設定で取得時刻で代用
     fetched_at     TEXT NOT NULL,              -- 取得日時 (このシステムが受信した時刻)
     toroku_tosu    INTEGER,
     syusso_tosu    INTEGER,

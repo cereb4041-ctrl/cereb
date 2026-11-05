@@ -22,7 +22,10 @@ from typing import Optional
 from . import db
 from .config import Settings
 from .jvlink import JVLinkError, JVLinkUnavailable
-from .records import PARSERS, parse_ra, record_spec
+from .records import PARSERS, RaceInfo, RecordLengthError, parse_ra, record_spec
+
+# JRA の競馬場コード 01=札幌 02=函館 03=福島 04=新潟 05=東京 06=中山 07=中京 08=京都 09=阪神 10=小倉
+JRA_JYO_CODES = {f"{i:02d}" for i in range(1, 11)}
 
 log = logging.getLogger(__name__)
 
@@ -104,12 +107,20 @@ class OddsCollector:
         """
         today = date.today()
         fromtime = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d000000")
-        races = []
+
+        def keep(r: RaceInfo) -> bool:
+            # 削除 (0)・地方 (A)・海外 (B) と JRA 以外の場は対象外。対象日のレースだけ残す
+            if r.data_kubun in ("0", "A", "B") or r.jyo_cd not in JRA_JYO_CODES:
+                return False
+            rd = date.fromisoformat(r.race_date)
+            return rd in target_dates if target_dates is not None else rd >= today
+
         source = "RACE"
+        races: list[RaceInfo] = []
         try:
             recs = self._call("JVOpen(RACE 今週データ)", self.client.stored_records,
                               "RACE", fromtime, 2, {"RA"})
-            races = [parse_ra(r) for r in recs]
+            races = [r for r in self._parse_all(recs, "RA", parse_ra) if keep(r)]
         except JVLinkError as e:
             if not e.retryable:
                 raise
@@ -126,22 +137,23 @@ class OddsCollector:
                         raise
                     log.warning("0B15 %s の取得に失敗: %s", d, e)
                     continue
-                races += [parse_ra(r) for r in recs if record_spec(r) == "RA"]
+                races += [r for r in self._parse_all(recs, "RA", parse_ra) if keep(r)]
 
-        # データ区分 0 (削除) と中止を除き、対象日のレースだけ残す。同一レースは最後のものを採用
-        uniq = {}
-        for r in races:
-            if r.data_kubun == "0":
-                continue
-            rd = date.fromisoformat(r.race_date)
-            if target_dates is not None and rd not in target_dates:
-                continue
-            if target_dates is None and rd < today:
-                continue
-            uniq[r.race_id] = r
+        uniq = {r.race_id: r for r in races}  # 同一レースは後のレコードが最新版
         n = db.upsert_races(self.conn, uniq.values(), source)
         log.info("レース情報を登録: %d レース (source=%s)", n, source)
         return n
+
+    @staticmethod
+    def _parse_all(recs, spec: str, parser):
+        """指定種別のレコードだけを解析する。仕様外の長さのレコードはログを残して読み飛ばす。"""
+        for raw in recs:
+            if record_spec(raw) != spec:
+                continue
+            try:
+                yield parser(raw)
+            except RecordLengthError as e:
+                log.warning("%s", e)
 
     @staticmethod
     def _upcoming_weekend(today: date) -> list[date]:
@@ -155,10 +167,7 @@ class OddsCollector:
         for spec, rtype in specs:
             fetched_at = db.now_str()
             recs = self._call(f"JVRTOpen({spec},{race_id})", self.client.rt_records, spec, race_id)
-            for raw in recs:
-                if record_spec(raw) != rtype:
-                    continue
-                rec = PARSERS[rtype](raw)
+            for rec in self._parse_all(recs, rtype, PARSERS[rtype]):
                 if rec.race_id != race_id:
                     continue
                 inserted += db.save_odds_record(self.conn, rec, spec, fetched_at)

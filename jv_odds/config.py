@@ -14,7 +14,8 @@ DEFAULT_CONFIG_PATH = BASE_DIR / "config.ini"
 class Settings:
     sid: str = "UNKNOWN"
     progid: str = "JVDTLab.JVLink"
-    read_buffer: int = 110000
+    read_buffer: int = 200000
+    read_method: str = "gets"
     download_timeout: int = 300
 
     interval_minutes: int = 10
@@ -53,6 +54,7 @@ def load_settings(path: Path | str | None = None) -> Settings:
     st.sid = j.get("sid", st.sid)
     st.progid = j.get("progid", st.progid)
     st.read_buffer = int(j.get("read_buffer", st.read_buffer))
+    st.read_method = j.get("read_method", st.read_method).strip().lower()
     st.download_timeout = int(j.get("download_timeout", st.download_timeout))
 
     c = cp["collector"] if cp.has_section("collector") else {}

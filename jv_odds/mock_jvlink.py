@@ -11,7 +11,7 @@ import random
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from .jvlink import JVLinkError
+from .jvlink import JVLinkError, validate_rt_key
 from .records import ENCODING
 
 log = logging.getLogger(__name__)
@@ -137,9 +137,15 @@ class MockJVLinkClient:
                        record_filter: Optional[set[str]] = None) -> list[str]:
         self.calls.append(("JVOpen", dataspec, fromtime, option))
         self._maybe_fail("JVOpen")
-        return [build_ra(rid, f"モック{rid[-2:]}R", post, tosu) for rid, post, tosu in self._race_ids()]
+        return [build_ra(rid, f"モック{rid[-2:]}R", post, tosu).encode(ENCODING)
+                for rid, post, tosu in self._race_ids()]
 
-    def rt_records(self, dataspec: str, key: str) -> list[str]:
+    def rt_records(self, dataspec: str, key: str) -> list[bytes]:
+        """実機の JVGets と同じく Shift-JIS の bytes で返す。キー形式も実機と同様に検査する。"""
+        validate_rt_key(dataspec, key)
+        return [r.encode(ENCODING) for r in self._rt_records(dataspec, key)]
+
+    def _rt_records(self, dataspec: str, key: str) -> list[str]:
         self.calls.append(("JVRTOpen", dataspec, key))
         self._maybe_fail(f"JVRTOpen({dataspec})")
         if dataspec == "0B15":
@@ -161,3 +167,44 @@ class MockJVLinkClient:
                  for a in base for b in base if a < b}
             return [build_o2(key, happyo, q)]
         return []
+
+
+class FakeJVLinkCOM:
+    """
+    JV-Link COM オブジェクトの偽物（環境チェックのテスト用）。
+    JVRTOpen の戻り値を実機の仕様に合わせて返し、JVClose 漏れは -202 として再現する。
+    """
+
+    def __init__(self, init_code: int = 0, auth_code: Optional[int] = None,
+                 reject_12digit: bool = False):
+        self.init_code = init_code
+        self.auth_code = auth_code
+        self.reject_12digit = reject_12digit
+        self.inited = False
+        self.opened = False
+        self.calls: list[tuple] = []
+
+    def JVInit(self, sid: str) -> int:
+        self.inited = self.init_code == 0
+        return self.init_code
+
+    def JVRTOpen(self, dataspec: str, key: str) -> int:
+        self.calls.append(("JVRTOpen", dataspec, key))
+        if not self.inited:
+            return -201
+        if self.opened:
+            return -202
+        if self.auth_code is not None:
+            return self.auth_code
+        try:
+            validate_rt_key(dataspec, key)
+        except JVLinkError as e:
+            return e.code
+        if self.reject_12digit and len(key) == 12:
+            return -114
+        self.opened = True
+        return -1  # 存在しないレース（提供期間外）
+
+    def JVClose(self) -> int:
+        self.opened = False
+        return 0

@@ -1,7 +1,7 @@
 """
 JV-Link 時系列オッズ収集システム CLI
 
-  python -m jv_odds check-env            必要ライブラリ・JV-Link の確認
+  python -m jv_odds check-env [--race-key K]  ライブラリ・COM 登録・JVInit・JVRTOpen の確認
   python -m jv_odds init-db              SQLite に DDL を適用
   python -m jv_odds races                今週末の開催レースを取得して登録
   python -m jv_odds run                  当日ループ（朝～最終レース発走まで 10 分間隔で取得）
@@ -15,13 +15,12 @@ from __future__ import annotations
 
 import argparse
 import logging
-import platform
-import struct
 import sys
 from datetime import date, datetime
 
 from . import db
 from .collector import OddsCollector
+from .envcheck import run_env_check
 from .config import load_settings
 from .jvlink import JVLinkClient, JVLinkError, JVLinkUnavailable
 from .logging_setup import setup_logging
@@ -35,41 +34,31 @@ def make_client(args, st):
         from .mock_jvlink import MockJVLinkClient
         log.info("モック JV-Link を使用します")
         return MockJVLinkClient(fail_rate=args.mock_fail_rate)
-    return JVLinkClient(st.sid, st.progid, st.read_buffer, st.download_timeout)
+    return JVLinkClient(st.sid, st.progid, st.read_buffer, st.download_timeout, st.read_method)
 
 
 def cmd_check_env(args, st) -> int:
-    ok = True
-    bits = struct.calcsize("P") * 8
-    print(f"Python      : {sys.version.split()[0]} ({bits}bit) / {platform.system()} {platform.release()}")
-    if platform.system() != "Windows":
-        print("  [NG] JV-Link は Windows 専用です（--mock で動作確認のみ可能）")
-        ok = False
-    if bits != 32:
-        print("  [WARN] JV-Link は 32bit COM です。32bit 版 Python を推奨します")
-    import sqlite3
-    print(f"sqlite3     : {sqlite3.sqlite_version} [OK]")
-    try:
-        import win32com.client  # type: ignore  # noqa: F401
-        import pythoncom  # type: ignore  # noqa: F401
-        print("pywin32     : [OK]")
-    except ImportError:
-        print("pywin32     : [NG] `pip install -r jv_odds/requirements.txt` を実行してください")
-        ok = False
-    if ok:
-        client = JVLinkClient(st.sid, st.progid, st.read_buffer, st.download_timeout)
+    race_key = args.race_key
+    if race_key is None and st.db_path.exists():
+        # DB に本日のレースがあれば、その最初のレースで実取得まで確認する
         try:
-            client.connect()
-            print(f"JV-Link     : {st.progid} JVInit 成功 [OK]")
-        except (JVLinkUnavailable, JVLinkError) as e:
-            print(f"JV-Link     : [NG] {e}")
-            ok = False
-        finally:
-            client.reset()
-    print(f"DB          : {st.db_path}")
-    print(f"ログ        : {st.log_dir}")
-    print("結果        :", "OK" if ok else "NG")
-    return 0 if ok else 1
+            conn = db.connect(st.db_path)
+            row = conn.execute("SELECT race_id FROM races WHERE race_date=? ORDER BY post_time LIMIT 1",
+                               (date.today().isoformat(),)).fetchone()
+            race_key = row[0] if row else None
+        except Exception:
+            race_key = None
+    if args.mock:
+        from .mock_jvlink import FakeJVLinkCOM, MockJVLinkClient
+        mock = MockJVLinkClient()
+        report = run_env_check(st.progid, st.sid, race_key, com_factory=FakeJVLinkCOM,
+                               fetch=mock.rt_records)
+    else:
+        report = run_env_check(st.progid, st.sid, race_key)
+    print(report.render())
+    print(f"DB  : {st.db_path}")
+    print(f"ログ: {st.log_dir}")
+    return 0 if report.ok else 1
 
 
 def cmd_init_db(args, st) -> int:
@@ -172,7 +161,8 @@ def main(argv=None) -> int:
     p.add_argument("--mock-fail-rate", type=float, default=0.0, help="モックのエラー発生率")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("check-env")
+    sp = sub.add_parser("check-env")
+    sp.add_argument("--race-key", help="実取得まで確認するレースキー (16桁 YYYYMMDDJJKKHHRR)")
     sub.add_parser("init-db")
     sp = sub.add_parser("races"); sp.add_argument("--date")
     sp = sub.add_parser("collect"); sp.add_argument("--all", action="store_true",

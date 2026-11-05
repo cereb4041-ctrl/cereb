@@ -6,8 +6,11 @@
 sid = UNKNOWN
 ; COM の ProgID
 progid = JVDTLab.JVLink
-; JVRead のバッファサイズ
-read_buffer = 110000
+; JVGets/JVRead のバッファサイズ（今週データに含まれる H6 102,890byte より大きくする）
+read_buffer = 200000
+; レコード読み出し方式: gets = JVGets (Shift-JIS の bytes をそのまま受け取る。推奨)
+;                       read = JVRead (Unicode 文字列。バイト位置がずれる恐れがあるため非推奨)
+read_method = gets
 ; JVOpen(今週データ) のダウンロード待ちタイムアウト（秒）
 download_timeout = 300
 

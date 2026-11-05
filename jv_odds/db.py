@@ -32,7 +32,15 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """既存 DB に後から追加した列を足す（CREATE TABLE IF NOT EXISTS では追加されないため）。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(odds_snapshots)")}
+    if "happyo_estimated" not in cols:
+        conn.execute("ALTER TABLE odds_snapshots ADD COLUMN happyo_estimated INTEGER NOT NULL DEFAULT 0")
 
 
 @contextmanager
@@ -112,6 +120,25 @@ def _latest_quinella(conn, race_id: str, before: str) -> dict[tuple[int, int], t
     return {(r["umaban1"], r["umaban2"]): (r["odds"], r["odds_status"]) for r in rows}
 
 
+def _changed_rows(conn, rec: OddsRecord, happyo_at: str) -> list[tuple]:
+    """直前の値から変化した馬・組番の INSERT 用タプル（snapshot_id 抜き）を返す。"""
+    out = []
+    if rec.record_type == "O1":
+        prev = _latest_win_place(conn, rec.race_id, happyo_at)
+        for o in rec.win_place:
+            if prev.get(o.umaban) == (o.win_odds, o.place_odds_min, o.place_odds_max, o.odds_status):
+                continue
+            out.append((o.umaban, o.win_odds, o.win_ninki, o.place_odds_min, o.place_odds_max,
+                        o.place_ninki, o.odds_status))
+    elif rec.record_type == "O2":
+        prev_q = _latest_quinella(conn, rec.race_id, happyo_at)
+        for q in rec.quinella:
+            if prev_q.get((q.umaban1, q.umaban2)) == (q.odds, q.odds_status):
+                continue
+            out.append((q.umaban1, q.umaban2, q.odds, q.ninki, q.odds_status))
+    return out
+
+
 def save_odds_record(
     conn: sqlite3.Connection,
     rec: OddsRecord,
@@ -122,65 +149,55 @@ def save_odds_record(
     オッズレコード 1 件を保存し、保存した差分行数を返す。
       - 同じ (レース, 賭式, 発表時刻) を既に受信済みなら何もしない (0 を返す)
       - 直前の値から変化した馬・組番のみ明細テーブルへ INSERT する
+      - 発表月日時分は仕様上「中間オッズ (データ区分 1) のみ設定」。最終・確定オッズなど
+        未設定のレコードは取得時刻 (分単位) を happyo_at とし happyo_estimated=1 とする。
+        直前のスナップショットと同じデータ区分で値も変わっていなければ保存しない。
+      - データ区分 0（該当レコード削除）は保存しない
     """
-    if not rec.happyo_at:
-        log.warning("発表時刻が不正なレコードをスキップ: race_id=%s type=%s", rec.race_id, rec.record_type)
+    if rec.data_kubun == "0":
+        log.info("削除レコード (データ区分0) をスキップ: race_id=%s type=%s", rec.race_id, rec.record_type)
         return 0
     fetched_at = fetched_at or now_str()
+    estimated = rec.happyo_at is None
+    happyo_at = rec.happyo_at or (fetched_at[:16] + ":00")
 
     with transaction(conn):
+        changes = _changed_rows(conn, rec, happyo_at)
+        if estimated and not changes:
+            last = conn.execute(
+                """SELECT data_kubun FROM odds_snapshots WHERE race_id=? AND record_type=?
+                   ORDER BY happyo_at DESC LIMIT 1""", (rec.race_id, rec.record_type)).fetchone()
+            if last and last["data_kubun"] == rec.data_kubun:
+                return 0  # 同じ最終/確定オッズの再受信
         cur = conn.execute(
             """
             INSERT OR IGNORE INTO odds_snapshots
-                (race_id, record_type, data_spec, data_kubun, happyo_at, fetched_at,
-                 toroku_tosu, syusso_tosu, sale_flags, total_votes)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+                (race_id, record_type, data_spec, data_kubun, happyo_at, happyo_estimated,
+                 fetched_at, toroku_tosu, syusso_tosu, sale_flags, total_votes, changed_rows)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             """,
-            (rec.race_id, rec.record_type, data_spec, rec.data_kubun, rec.happyo_at, fetched_at,
-             rec.toroku_tosu, rec.syusso_tosu, rec.sale_flags, rec.total_votes),
+            (rec.race_id, rec.record_type, data_spec, rec.data_kubun, happyo_at, int(estimated),
+             fetched_at, rec.toroku_tosu, rec.syusso_tosu, rec.sale_flags, rec.total_votes,
+             len(changes)),
         )
         if cur.rowcount == 0:
             return 0  # 受信済みの発表時刻
-        snapshot_id = cur.lastrowid
-        changed = 0
-
+        sid = cur.lastrowid
         if rec.record_type == "O1":
-            prev = _latest_win_place(conn, rec.race_id, rec.happyo_at)
-            for o in rec.win_place:
-                cur_v = (o.win_odds, o.place_odds_min, o.place_odds_max, o.odds_status)
-                if prev.get(o.umaban) == cur_v:
-                    continue
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO odds_win_place
-                        (snapshot_id, race_id, umaban, happyo_at, fetched_at, win_odds, win_ninki,
-                         place_odds_min, place_odds_max, place_ninki, odds_status)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (snapshot_id, rec.race_id, o.umaban, rec.happyo_at, fetched_at, o.win_odds,
-                     o.win_ninki, o.place_odds_min, o.place_odds_max, o.place_ninki, o.odds_status),
-                )
-                changed += 1
-        elif rec.record_type == "O2":
-            prev_q = _latest_quinella(conn, rec.race_id, rec.happyo_at)
-            for q in rec.quinella:
-                if prev_q.get((q.umaban1, q.umaban2)) == (q.odds, q.odds_status):
-                    continue
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO odds_quinella
-                        (snapshot_id, race_id, umaban1, umaban2, happyo_at, fetched_at,
-                         odds, ninki, odds_status)
-                    VALUES (?,?,?,?,?,?,?,?,?)
-                    """,
-                    (snapshot_id, rec.race_id, q.umaban1, q.umaban2, rec.happyo_at, fetched_at,
-                     q.odds, q.ninki, q.odds_status),
-                )
-                changed += 1
-
-        conn.execute("UPDATE odds_snapshots SET changed_rows = ? WHERE snapshot_id = ?",
-                     (changed, snapshot_id))
-    return changed
+            conn.executemany(
+                """INSERT OR IGNORE INTO odds_win_place
+                       (snapshot_id, race_id, happyo_at, fetched_at, umaban, win_odds, win_ninki,
+                        place_odds_min, place_odds_max, place_ninki, odds_status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                [(sid, rec.race_id, happyo_at, fetched_at, *c) for c in changes])
+        else:
+            conn.executemany(
+                """INSERT OR IGNORE INTO odds_quinella
+                       (snapshot_id, race_id, happyo_at, fetched_at, umaban1, umaban2,
+                        odds, ninki, odds_status)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                [(sid, rec.race_id, happyo_at, fetched_at, *c) for c in changes])
+    return len(changes)
 
 
 def last_happyo_at(conn: sqlite3.Connection, race_id: str) -> Optional[str]:
